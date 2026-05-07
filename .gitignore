@@ -54,3 +54,10 @@ htmlcov/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# Local data / SQLite databases
+*.db
+data/document_index/
+
+# Docker
+docker-compose.override.yml
