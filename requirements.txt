@@ -1,0 +1,35 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+instructor
+google-genai
+python-dotenv
+requests
+msal
+pytest
+pytest-asyncio
+httpx
+openai
+slowapi
+pdfplumber>=0.10.0
+python-docx>=1.0.0
+openpyxl>=3.1.0
+pandas>=2.0.0
+python-multipart
+PyJWT
+cryptography
+
+# Redis for distributed security controls, rate limiting, and conversation state
+redis>=5.0.0
+
+# Caching utilities (included in stdlib, but useful for type hints)
+ cachetools>=5.3.0
+
+# Additional monitoring and observability
+# prometheus-client>=0.20.0
+# sentry-sdk>=1.40.0
+aiosqlite
+cachetools
+pdfplumber
+beautifulsoup4>=4.12.0

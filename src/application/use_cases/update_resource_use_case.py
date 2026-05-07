@@ -1,0 +1,163 @@
+"""Use case for updating existing SharePoint resources."""
+
+from typing import Dict, Any
+from src.domain.entities.preview import ProvisioningPreview, ResourceChange, OperationType, RiskLevel
+from src.domain.entities.core import SPPermissionMask, SPList, ActionType
+from src.domain.repositories import SharePointRepository
+from src.domain.value_objects import SPColumn
+
+
+class UpdateResourceUseCase:
+    """Update existing SharePoint resources with preview support."""
+    
+    def __init__(self, repository: SharePointRepository):
+        """Initialize use case.
+        
+        Args:
+            repository: List repository for list read/update operations
+        """
+        self.repository = repository
+    
+    async def execute(self, resource_type: str, site_id: str, resource_id: str, 
+                      modifications: Dict[str, Any], preview_only: bool = True,
+                      user_email: str = None) -> Dict[str, Any]:
+        """Update a SharePoint resource.
+        
+        Args:
+            resource_type: Type of resource ("list", "page", "library")
+            site_id: SharePoint site ID
+            resource_id: Resource ID to update
+            modifications: Dictionary of modifications to apply
+            preview_only: If True, generate preview without executing
+            user_email: Optional email of the user to check permissions against
+            
+        Returns:
+            Dictionary with preview and/or result
+        """
+        from src.domain.exceptions import PermissionDeniedException
+
+        # Enforce user permissions — identity is mandatory
+        if not user_email:
+            raise PermissionDeniedException(
+                "No user identity provided. Authentication is required to update resources."
+            )
+        has_perms = await self.repository.check_user_permission(
+            user_email, SPPermissionMask.MANAGE_LISTS
+        )
+        if not has_perms:
+            raise PermissionDeniedException(
+                f"User '{user_email}' does not have sufficient SharePoint permissions (ManageLists) to update this resource."
+            )
+
+        # Generate preview
+        preview = await self._generate_update_preview(resource_type, site_id, resource_id, modifications)
+        
+        if preview_only:
+            return {
+                "preview": preview,
+                "requires_confirmation": True
+            }
+        
+        # Execute update
+        result = await self._execute_update(resource_type, site_id, resource_id, modifications)
+        
+        return {
+            "preview": preview,
+            "result": result,
+            "success": result is not None
+        }
+    
+    async def _generate_update_preview(self, resource_type: str, site_id: str, 
+                                        resource_id: str, modifications: Dict[str, Any]) -> ProvisioningPreview:
+        """Generate preview of update operation."""
+        # Fetch current state
+        if resource_type == "list":
+            sp_list_entity = await self.repository.get_list(resource_id, site_id)
+            current = {
+                "displayName": sp_list_entity.title,
+                "description": sp_list_entity.description,
+                "columns": [c.name for c in sp_list_entity.columns],
+            }
+        else:
+            current = {}
+        
+        # Build change description
+        change = ResourceChange(
+            resource_type=resource_type,
+            resource_name=current.get("displayName", current.get("name", "Unknown")),
+            change_type="modify",
+            before_state=self._extract_state(current),
+            after_state=self._merge_state(current, modifications),
+            description=self._describe_modifications(modifications)
+        )
+        
+        preview = ProvisioningPreview(
+            operation_type=OperationType.UPDATE,
+            affected_resources=[change],
+            risk_level=RiskLevel.MEDIUM,
+            visual_representation=f"**Updating {resource_type}: {change.resource_name}**\n\n{self._format_diff(change)}"
+        )
+        
+        return preview
+    
+    async def _execute_update(self, resource_type: str, site_id: str,
+                               resource_id: str, modifications: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the update operation."""
+        if resource_type == "list":
+            # Convert the modifications dict into an SPList entity before calling the repository.
+            title = modifications.get("title", modifications.get("displayName", ""))
+            description = modifications.get("description", "")
+            raw_columns = modifications.get("columns")
+            if raw_columns and isinstance(raw_columns, list):
+                columns = [
+                    SPColumn(name=c.get("name", c) if isinstance(c, dict) else str(c), type="text", required=False)
+                    for c in raw_columns
+                ]
+            else:
+                columns = [SPColumn(name="Title", type="text", required=False)]
+            sp_list_entity = SPList(
+                title=title or "Updated List",
+                description=description,
+                columns=columns,
+                action=ActionType.UPDATE,
+                list_id=resource_id,
+            )
+            return await self.repository.update_list(resource_id, sp_list_entity, site_id)
+        elif resource_type == "page":
+            return await self.repository.update_page_content(resource_id, modifications)
+        elif resource_type == "library":
+            return await self.repository.update_document_library(resource_id, modifications, site_id)
+        elif resource_type == "site":
+            return await self.repository.update_site(resource_id, modifications)
+        else:
+            raise ValueError(f"Unsupported resource_type for update: '{resource_type}'.")
+    
+    def _extract_state(self, resource: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract relevant state from resource."""
+        return {
+            "title": resource.get("displayName", resource.get("name", "")),
+            "description": resource.get("description", ""),
+            "columns": len(resource.get("columns", []))
+        }
+    
+    def _merge_state(self, current: Dict[str, Any], modifications: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge modifications into current state."""
+        merged = self._extract_state(current)
+        merged.update(modifications)
+        return merged
+    
+    def _describe_modifications(self, modifications: Dict[str, Any]) -> str:
+        """Generate human-readable description of modifications."""
+        changes = [f"{key}: {value}" for key, value in modifications.items()]
+        return ", ".join(changes)
+    
+    def _format_diff(self, change: ResourceChange) -> str:
+        """Format before/after diff."""
+        lines = []
+        if change.before_state and change.after_state:
+            for key in change.after_state:
+                before = change.before_state.get(key, "(none)")
+                after = change.after_state.get(key, "(none)")
+                if before != after:
+                    lines.append(f"  - **{key}**: {before} → {after}")
+        return "\n".join(lines) if lines else "No changes"
