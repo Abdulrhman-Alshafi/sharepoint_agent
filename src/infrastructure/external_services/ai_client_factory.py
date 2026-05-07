@@ -167,17 +167,33 @@ def _build_instructor_client() -> Tuple[Any, Optional[str]]:
         # Use the new unified google-genai SDK with Vertex AI backend
         from google import genai
 
-        # Set credentials if path is provided
-        if settings.VERTEXAI_CREDENTIALS_PATH:
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.VERTEXAI_CREDENTIALS_PATH
-        
+        # Set credentials from env vars (no JSON file needed)
+        if settings.VERTEXAI_CLIENT_EMAIL and settings.VERTEXAI_PRIVATE_KEY:
+            from google.oauth2 import service_account
+            credentials = service_account.Credentials.from_service_account_info(
+                {
+                    "type": "service_account",
+                    "project_id": settings.VERTEXAI_PROJECT_ID,
+                    "private_key": settings.VERTEXAI_PRIVATE_KEY.replace("\\n", "\n"),
+                    "client_email": settings.VERTEXAI_CLIENT_EMAIL,
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                },
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+        else:
+            credentials = None
+
         # Initialize the unified genai client for Vertex AI
-        client = genai.Client(
-            vertexai=True,
-            project=settings.VERTEXAI_PROJECT_ID,
-            location=settings.VERTEXAI_LOCATION,
-        )
+        client_kwargs = {
+            "vertexai": True,
+            "project": settings.VERTEXAI_PROJECT_ID,
+            "location": settings.VERTEXAI_LOCATION,
+        }
+        if credentials:
+            client_kwargs["credentials"] = credentials
         
+        client = genai.Client(**client_kwargs)
+
         # Create wrapper for Vertex AI
         wrapper = GenAIInstructorWrapper(client, settings.VERTEXAI_MODEL)
         model = None

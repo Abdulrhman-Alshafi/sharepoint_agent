@@ -102,18 +102,13 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
             resource_type = "page"
             # Resolve page ID by searching for the page name in the message
             try:
-                from src.infrastructure.services.sharepoint.page_service import PageService
-                from src.infrastructure.graph_service import GraphAPIClient
-                graph_client = getattr(repository, 'graph_client', None)
-                if graph_client:
-                    page_service = PageService(graph_client)
-                    pages = await page_service.get_all_pages(site_id)
-                    for page in pages:
-                        page_name = (page.get("name") or page.get("title") or "").lower()
-                        if page_name and page_name in message_lower:
-                            resource_id = page.get("id")
-                            resource_name = page.get("name") or page.get("title")
-                            break
+                pages = await repository.get_all_pages(site_id=_delete_site_id)
+                for page in pages:
+                    page_name = (page.get("name") or page.get("title") or "").lower().replace(".aspx", "")
+                    if page_name and page_name in message_lower:
+                        resource_id = page.get("id")
+                        resource_name = page.get("name") or page.get("title")
+                        break
             except Exception:
                 pass
         elif "library" in message_lower:
@@ -200,20 +195,17 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                 if hist_name:
                     _hist_type_lower = (hist_type or "list").lower()
                     if _hist_type_lower == "page":
-                        # Resolve page by name
+                        # Resolve page by name using the repository directly
                         try:
-                            from src.infrastructure.services.sharepoint.page_service import PageService
-                            _pg_gc = getattr(repository, 'graph_client', None)
-                            if _pg_gc:
-                                _pg_svc = PageService(_pg_gc)
-                                _all_pages = await _pg_svc.get_all_pages(_delete_site_id)
-                                for _pg in _all_pages:
-                                    _pg_name = (_pg.get("name") or _pg.get("title") or "").lower()
-                                    if _pg_name and (_pg_name == hist_name.lower() or _pg_name.replace(" ", "") == hist_name.lower().replace(" ", "")):
-                                        resource_type = "page"
-                                        resource_id = _pg.get("id")
-                                        resource_name = _pg.get("name") or _pg.get("title") or hist_name
-                                        break
+                            _all_pages = await repository.get_all_pages(site_id=_delete_site_id)
+                            _hist_compact = hist_name.lower().replace(" ", "").replace(".aspx", "")
+                            for _pg in _all_pages:
+                                _pg_name = (_pg.get("name") or _pg.get("title") or "").lower().replace(".aspx", "")
+                                if _pg_name and (_pg_name == hist_name.lower() or _pg_name.replace(" ", "") == _hist_compact):
+                                    resource_type = "page"
+                                    resource_id = _pg.get("id")
+                                    resource_name = _pg.get("name") or _pg.get("title") or hist_name
+                                    break
                         except Exception:
                             pass
                     elif _hist_type_lower == "library":

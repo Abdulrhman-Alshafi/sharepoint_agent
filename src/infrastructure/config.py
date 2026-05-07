@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     VERTEXAI_PROJECT_ID: str = ""
     VERTEXAI_LOCATION: str = "us-central1"
     VERTEXAI_MODEL: str = "gemini-1.5-pro"
-    VERTEXAI_CREDENTIALS_PATH: str = ""
+    VERTEXAI_CLIENT_EMAIL: str = ""
+    VERTEXAI_PRIVATE_KEY: str = ""
 
     # Generic OpenAI-compatible (Groq, Ollama, …)
     OPENAI_API_KEY: str = ""
@@ -108,8 +109,8 @@ class Settings(BaseSettings):
         if self.AI_PROVIDER == "vertexai":
             if not self.VERTEXAI_PROJECT_ID:
                 raise ValueError("VERTEXAI_PROJECT_ID is required when AI_PROVIDER='vertexai'")
-            if not self.VERTEXAI_CREDENTIALS_PATH:
-                raise ValueError("VERTEXAI_CREDENTIALS_PATH is required when AI_PROVIDER='vertexai'")
+            if not self.VERTEXAI_CLIENT_EMAIL or not self.VERTEXAI_PRIVATE_KEY:
+                raise ValueError("VERTEXAI_CLIENT_EMAIL and VERTEXAI_PRIVATE_KEY are required when AI_PROVIDER='vertexai'")
         if self.AI_PROVIDER == "openai":
             if not self.OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY is required when AI_PROVIDER='openai'")
