@@ -239,19 +239,6 @@ def _site_suggestions(field_name: str, prompt_lower: str, original_prompt: str, 
     if field_name == "owner_email":
         return ["Skip (use default)", ""]
 
-    if field_name == "site_content":
-        if subj:
-            return [
-                "You choose the best setup",
-                f"Home page, {subj} Documents library, Tasks list",
-                "Just the site, no extras",
-            ]
-        return [
-            "You choose the best setup",
-            "Home page, Documents library, Tasks list",
-            "Just the site, no extras",
-        ]
-
     return []
 
 
@@ -322,9 +309,6 @@ def _library_suggestions(field_name: str, prompt_lower: str, original_prompt: st
             ]
         return ["General document storage", "Team shared files", ""]
 
-    if field_name == "needs_permissions":
-        return ["Yes, restrict access", "No, everyone can access"]
-
     if field_name == "create_folders":
         return ["Yes, create folders now", "No folders for now"]
 
@@ -337,17 +321,6 @@ def _library_suggestions(field_name: str, prompt_lower: str, original_prompt: st
         return [
             "General, Templates, Archive",
             "Projects/2026/Q1, Projects/2026/Q2",
-        ]
-
-    if field_name == "permission_groups":
-        if subj:
-            return [
-                f"{subj} Team: Contribute, Everyone: Read",
-                f"{subj} Editors: Edit, {subj} Viewers: Read",
-            ]
-        return [
-            "Team Members: Contribute, Managers: Edit",
-            "Everyone: Read",
         ]
 
     return []

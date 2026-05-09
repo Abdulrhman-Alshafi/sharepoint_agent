@@ -9,8 +9,7 @@ AI receives ``{"Employee": "Ahmad Ali"}`` instead.
 """
 
 import logging
-import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -65,38 +64,86 @@ async def resolve_person_fields(
     for item in items:
         for base_name in all_person_keys:
             lid_key = f"{base_name}{_LOOKUP_SUFFIX}"
-            val = item.get(lid_key)
-            if isinstance(val, (int, float)):
-                lookup_ids.add(int(val))
+            id_key = f"{base_name}Id"
+            for raw in (item.get(lid_key), item.get(id_key), item.get(base_name)):
+                lookup_ids |= _collect_lookup_ids(raw)
 
-    if not lookup_ids:
-        return items  # Nothing to resolve
+    id_to_name: Dict[int, str] = {}
+    if lookup_ids:
+        # 4. Resolve LookupIds to display names
+        id_to_name = await _resolve_user_ids(lookup_ids, graph_client, site_id)
 
-    # 4. Resolve LookupIds to display names
-    id_to_name = await _resolve_user_ids(lookup_ids, graph_client, site_id)
-
-    # 5. Rewrite item dicts: remove LookupId key, add human-readable key
+    # 5. Rewrite item dicts: normalize person fields to readable names
     for item in items:
         for base_name in all_person_keys:
             lid_key = f"{base_name}{_LOOKUP_SUFFIX}"
-            val = item.get(lid_key)
-            if isinstance(val, (int, float)):
-                uid = int(val)
-                display = id_to_name.get(uid)
-                if display:
-                    item[base_name] = display
-                    # Remove the raw LookupId key so it doesn't confuse the AI
+            id_key = f"{base_name}Id"
+
+            names = _collect_display_names(item.get(base_name))
+            ids = _collect_lookup_ids(item.get(lid_key))
+            ids |= _collect_lookup_ids(item.get(id_key))
+            ids |= _collect_lookup_ids(item.get(base_name))
+
+            if not names and ids:
+                for uid in sorted(ids):
+                    names.append(id_to_name.get(uid, f"User #{uid}"))
+
+            if names:
+                # Deduplicate while preserving order
+                uniq = list(dict.fromkeys([n.strip() for n in names if str(n).strip()]))
+                if uniq:
+                    item[base_name] = uniq[0] if len(uniq) == 1 else ", ".join(uniq)
                     item.pop(lid_key, None)
-                else:
-                    # If we couldn't resolve, at least label it so AI knows what it is
-                    item[base_name] = f"User #{uid}"
-                    item.pop(lid_key, None)
+                    item.pop(id_key, None)
 
     logger.info(
         "Resolved %d person field(s) across %d items (columns: %s)",
         len(lookup_ids), len(items), ", ".join(sorted(all_person_keys)),
     )
     return items
+
+
+def _collect_lookup_ids(value: Any) -> Set[int]:
+    """Extract numeric user IDs from common SharePoint person field shapes."""
+    ids: Set[int] = set()
+    if value is None:
+        return ids
+    if isinstance(value, (int, float)):
+        ids.add(int(value))
+        return ids
+    if isinstance(value, list):
+        for v in value:
+            ids |= _collect_lookup_ids(v)
+        return ids
+    if isinstance(value, dict):
+        for key in ("LookupId", "lookupId", "Id", "id", "UserId"):
+            raw = value.get(key)
+            if isinstance(raw, (int, float)):
+                ids.add(int(raw))
+        if isinstance(value.get("results"), list):
+            ids |= _collect_lookup_ids(value.get("results"))
+    return ids
+
+
+def _collect_display_names(value: Any) -> List[str]:
+    """Extract readable names from common SharePoint person field shapes."""
+    names: List[str] = []
+    if value is None:
+        return names
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        for v in value:
+            names.extend(_collect_display_names(v))
+        return names
+    if isinstance(value, dict):
+        for key in ("LookupValue", "Title", "displayName", "Name", "name", "EMail", "Email", "UserName", "userPrincipalName"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip():
+                names.append(raw.strip())
+        if isinstance(value.get("results"), list):
+            names.extend(_collect_display_names(value.get("results")))
+    return names
 
 
 async def _resolve_user_ids(

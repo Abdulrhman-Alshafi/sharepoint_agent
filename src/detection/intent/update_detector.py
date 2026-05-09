@@ -49,10 +49,16 @@ _FIELD_FILTER_PATTERNS = (
     " is ", " whose ", "where ", "with name", "with title",
     "the one ", "the entry ", "the record ", "the row ",
     " field to ", " field ",
+    " to ",  # e.g. 'update the Black color hex_code to #000'
 )
 
-# ── Schema words (block layer 4 promotion) ──────────────────────────────────
-_SCHEMA_WORDS = frozenset({"column", "add a ", "add column", "rename the list", "rename list"})
+# ── Schema words (block layer 4 promotion) ───────────────────────────
+_SCHEMA_WORDS = frozenset({
+    "column", "add a ", "add column",
+    "rename the list", "rename list",
+    "the list to",  
+    "list name to", 
+})
 
 
 def detect_update_intent(text: str) -> DetectionResult:

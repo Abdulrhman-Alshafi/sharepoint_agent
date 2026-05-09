@@ -41,6 +41,8 @@ SYNONYMS: Dict[str, List[str]] = {
 
     # ── HR ───────────────────────────────────────────────────────────────────
     "employees":    ["employee", "staff", "personnel", "team members", "resources", "people"],
+    "employee":     ["employees", "staff", "personnel", "people", "team member"],
+    "month":        ["monthly", "employeeofmonth", "recognition"],
     "onboarding":   ["onboard", "new hire", "orientation", "induction", "new employee"],
     "policies":     ["policy", "guidelines", "rules", "procedures", "handbook"],
     "hr":           ["human resources", "people", "personnel"],
@@ -61,7 +63,10 @@ SYNONYMS: Dict[str, List[str]] = {
     "kudos":        ["kudo", "recognition", "shoutout", "shoutouts", "praise",
                      "award", "awards", "appreciation"],
     "kudo":         ["kudos", "recognition", "shoutout", "praise", "award", "appreciation"],
-    "recognition":  ["kudos", "kudo", "shoutout", "praise", "award", "appreciation"],
+    "recognition":  ["kudos", "kudo", "shoutout", "praise", "award", "appreciation", "employeeofmonth", "monthly award", "employee of the month"],
+    "employeeofmonth": ["employee", "month", "recognition", "award", "kudos", "monthly", "star", "best employee"],
+    "award":        ["awards", "recognition", "kudos", "employee of the month", "prize", "achievement"],
+    "awards":       ["award", "recognition", "kudos", "employee of the month", "prizes", "achievements"],
     "kudosposts":   ["kudos", "gave", "give", "given", "sent", "received",
                      "recognition", "shoutout"],
     "gave":         ["kudosposts", "sent", "submitted", "posted"],

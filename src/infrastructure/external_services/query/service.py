@@ -298,8 +298,22 @@ class AIDataQueryService(
             ]
 
             # Step 5: Deterministic list-name match → treat as specific_data
-            direct_match = find_list_by_name(_routing_question, list_summaries)
+            # CRITICAL EXCEPTION: For "employee of the month" queries, SKIP direct matching
+            # and force semantic discovery to ensure we get the right resource.
+            # Direct matching could incorrectly select a "Kudos" list with "Employee of the Month"
+            # in its description.
+            import re as _re_eom_check
+            _is_eom_query = bool(
+                _re_eom_check.search(r'\bemployee\s+of\s+the\s+month\b', _routing_question, _re_eom_check.IGNORECASE)
+                or _re_eom_check.search(r'\bhow\s+is\s+.*employee.*month', _routing_question, _re_eom_check.IGNORECASE)
+            )
+            
+            direct_match = None if _is_eom_query else find_list_by_name(_routing_question, list_summaries)
             if direct_match:
+                logger.info(
+                    "Direct list match found: '%s' for question '%s'",
+                    direct_match.get("name"), _routing_question
+                )
                 return await self._handle_specific_data_query(
                     question, direct_match, all_lists, target_site_id, target_site_name
                 )
@@ -380,6 +394,34 @@ class AIDataQueryService(
                             resource_type=route.resource_type,
                             site_name=route.site_name,
                             semantic_target=route.semantic_target,
+                            list_id=None,
+                            filter_keywords=route.filter_keywords,
+                            library_names=route.library_names,
+                            search_query=route.search_query,
+                            data_query=route.data_query,
+                            is_meta_query=route.is_meta_query,
+                        )
+
+            # ── Employee-of-the-month GUARD: Block kudos list for EOM queries ──
+            # If the query is asking about "employee of the month" and the router
+            # suggested a kudos-related list, nullify list_id to force smart discovery.
+            if route.list_id and _is_eom_query:
+                _eom_match = next(
+                    (l for l in list_summaries if l["id"] == route.list_id), None
+                )
+                if _eom_match:
+                    _eom_list_name = (_eom_match.get("name") or "").lower()
+                    if "kudo" in _eom_list_name:
+                        logger.warning(
+                            "GUARD: Employee-of-month query tried to use '%s' (kudos list) — "
+                            "nullifying list_id to force semantic discovery",
+                            _eom_match.get("name"),
+                        )
+                        route = RouterResponse(
+                            intent=route.intent,
+                            resource_type=route.resource_type,
+                            site_name=route.site_name,
+                            semantic_target=route.semantic_target or "employee of the month",
                             list_id=None,
                             filter_keywords=route.filter_keywords,
                             library_names=route.library_names,

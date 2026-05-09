@@ -86,7 +86,8 @@ class RequirementGatheringService:
         
         # Find the first unanswered question
         questions = QuestionTemplates.get_questions(resource_type)
-        starting_index = 0
+        # Use len(questions) as a sentinel: it means all fields are already answered.
+        starting_index = len(questions)
         for i, question in enumerate(questions):
             if question.field_name not in spec.collected_fields:
                 starting_index = i
@@ -135,6 +136,9 @@ class RequirementGatheringService:
         
         # Parse and store answer
         parsed_answer = self._parse_answer(answer, current_question)
+        validation_error = self._validate_answer(parsed_answer, current_question, spec.resource_type)
+        if validation_error:
+            raise ValueError(validation_error)
         spec.collected_fields[current_question.field_name] = parsed_answer
         
         # Move to next question
@@ -166,6 +170,25 @@ class RequirementGatheringService:
         
         self.conversation_repo.save(state)
         return state, next_question, False
+
+    def _validate_answer(self, parsed_answer: Any, question: Question, resource_type: ResourceType) -> Optional[str]:
+        """Validate parsed answer for specific fields before moving to next question."""
+        # Early library name validation to avoid late provisioning rejection.
+        if resource_type == ResourceType.LIBRARY and question.field_name == "title":
+            name = str(parsed_answer or "").strip()
+            if not name:
+                return "Please enter a library name."
+
+            # Keep this rule aligned with provisioning validation constraints.
+            if not re.match(r"^[A-Za-z0-9 _-]+$", name):
+                bad_chars = sorted({ch for ch in name if not re.match(r"[A-Za-z0-9 _-]", ch)})
+                bad_display = " ".join(bad_chars) if bad_chars else "invalid symbols"
+                return (
+                    f"The library name '{name}' is not valid because it contains invalid character(s): {bad_display}. "
+                    "Please use only letters, numbers, spaces, underscores (_), or hyphens (-)."
+                )
+
+        return None
 
     def get_specification_summary(self,session_id: str) -> Dict[str, Any]:
         """Get a summary of collected specifications.
@@ -271,9 +294,9 @@ class RequirementGatheringService:
         if "title" not in extracted:
             unquoted_patterns = [
                 # "called/named/name X list"
-                r"(?:called|named|name)\s+([A-Za-z0-9][A-Za-z0-9\s\-_]+?)(?:\s+(?:list|library|page|group|view|site)|\.|$)",
+                r"(?:called|named|name)\s+([A-Za-z0-9][A-Za-z0-9\s\-_.]+?)(?:\s+(?:list|library|page|group|view|site)|\.|$)",
                 # "create a Project Tracker list"
-                r"create\s+(?:a|an)?\s+([A-Za-z][A-Za-z0-9\s]+?)\s+(?:list|library|page|group|view|site)",
+                r"create\s+(?:a|an)?\s+([A-Za-z][A-Za-z0-9\s\-_.]+?)\s+(?:list|library|page|group|view|site)",
             ]
             
             if resource_type not in [ResourceType.VIEW, ResourceType.GROUP]:
@@ -375,14 +398,6 @@ class RequirementGatheringService:
             if any(phrase in message_lower for phrase in ["generate content", "ai content", "write content"]):
                 extracted["main_content"] = "Generate it for me"
         
-        # Extract site child resource preference
-        if resource_type == ResourceType.SITE:
-            if any(phrase in message_lower for phrase in ["with pages", "with lists", "with libraries", "include pages"]):
-                # User mentioned child resources — leave site_content for them to specify
-                pass
-            elif any(phrase in message_lower for phrase in ["no pages", "no lists", "only the site", "just the site"]):
-                extracted["site_content"] = "Just the site, no extras"
-
         # Extract boolean preferences (sample data, permissions, etc.)
         if "sample data" in message_lower or "add sample" in message_lower or "seed" in message_lower:
             extracted["add_sample_data"] = "Yes, add sample data"
@@ -396,6 +411,21 @@ class RequirementGatheringService:
                     extracted["folder_paths"] = folder_match.group(1).strip()
             elif any(p in message_lower for p in ["no folder", "without folder", "skip folders"]):
                 extracted["create_folders"] = "No folders for now"
+
+            # For explicit create commands with a concrete library title, default to
+            # "no folders" and current site to avoid unnecessary follow-up questions.
+            is_explicit_create = any(tok in message_lower for tok in ["create", "new", "add", "make"])
+            has_site_hint = bool(
+                re.search(
+                    r"\b(?:in|on|under|at)\s+(?:the\s+)?[A-Za-z0-9][A-Za-z0-9\s\-_]*\s+site\b",
+                    message,
+                    re.IGNORECASE,
+                )
+            )
+            if is_explicit_create and extracted.get("title"):
+                extracted.setdefault("create_folders", "No folders for now")
+                if not has_site_hint:
+                    extracted.setdefault("target_site", "CURRENT_SITE")
         
         return extracted
 
@@ -432,6 +462,18 @@ class RequirementGatheringService:
                 if folder:
                     normalized.append(folder)
             return normalized
+
+        if question.field_name == "target_site":
+            answer_lower = answer.lower()
+            current_site_phrases = {
+                "use current site",
+                "current site",
+                "this site",
+                "same site",
+                "here",
+            }
+            if answer_lower in current_site_phrases:
+                return "CURRENT_SITE"
         
         if question.field_type == "boolean":
             return answer.lower() in ["yes", "y", "true", "1", "sure", "ok", "yeah"]
@@ -486,13 +528,13 @@ class RequirementGatheringService:
         name_patterns = [
             # "called/named 'X'" or "called/named X"
             r"(?:called|named|titled?)\s+['\"]([^'\"]+)['\"]",
-            r"(?:called|named|titled?)\s+([A-Za-z][A-Za-z0-9 ]+?)(?:\s+(?:list|library|page|group|view|site)|[.,]|$)",
+            r"(?:called|named|titled?)\s+([A-Za-z][A-Za-z0-9 \-_.]+?)(?:\s+(?:list|library|page|group|view|site)|[.,]|$)",
             # "it is a list for/called/named X"
-            r"(?:it(?:'s| is)?\s+(?:a |an |the )?(?:list|library|page)?\s*(?:for|called|named|about))\s+([A-Za-z][A-Za-z0-9 ]+?)(?:[.,]|$)",
+            r"(?:it(?:'s| is)?\s+(?:a |an |the )?(?:list|library|page)?\s*(?:for|called|named|about))\s+([A-Za-z][A-Za-z0-9 \-_.]+?)(?:[.,]|$)",
             # "this list is for/about X"
-            r"(?:this\s+(?:list|library|page)\s+(?:is\s+)?(?:for|about|called|named))\s+([A-Za-z][A-Za-z0-9 ]+?)(?:[.,]|$)",
+            r"(?:this\s+(?:list|library|page)\s+(?:is\s+)?(?:for|about|called|named))\s+([A-Za-z][A-Za-z0-9 \-_.]+?)(?:[.,]|$)",
             # general "for/about X" fallback
-            r"(?:for|about)\s+([A-Za-z][A-Za-z0-9 ]+?)(?:\s+(?:list|library|page)|[.,]|$)",
+            r"(?:for|about)\s+([A-Za-z][A-Za-z0-9 \-_.]+?)(?:\s+(?:list|library|page)|[.,]|$)",
         ]
         stop_words = {"list", "library", "page", "group", "view", "site", "a", "an", "the"}
         for pattern in name_patterns:
@@ -517,12 +559,7 @@ class RequirementGatheringService:
         Returns:
             True if should skip
         """
-        # Skip permission-related questions if "No restrictions" was selected
         if spec.resource_type == ResourceType.LIBRARY:
-            if question.field_name == "permission_groups":
-                needs_permissions = spec.collected_fields.get("needs_permissions", "")
-                if "No" in needs_permissions or "everyone" in needs_permissions.lower():
-                    return True
             if question.field_name == "folder_paths":
                 create_folders = str(spec.collected_fields.get("create_folders", "")).lower()
                 if "no folders" in create_folders:

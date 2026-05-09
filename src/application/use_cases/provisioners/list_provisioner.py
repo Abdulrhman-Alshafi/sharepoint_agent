@@ -25,6 +25,7 @@ class ListProvisioner:
         blueprint: ProvisioningBlueprint,
         site_id: Optional[str] = None,
         principal_resolver_repo: Optional[Any] = None,
+        fallback_user_email: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
         """Provision all lists from the blueprint.
         
@@ -34,6 +35,8 @@ class ListProvisioner:
             principal_resolver_repo: Optional repository used to resolve
                 person principals for seed-data fields. When omitted, falls
                 back to this provisioner's repository.
+            fallback_user_email: Optional authenticated user email used as a
+                fallback principal when AI-generated user emails are invalid.
             
         Returns:
             Tuple of (created lists, list of resource links, list of warnings)
@@ -106,7 +109,30 @@ class ListProvisioner:
                                                 resolved_item[f"{k}LookupId"] = principal_id
                                                 logger.debug("Resolved person '%s' → principal %d for column '%s'", v, principal_id, k)
                                             except Exception as _resolve_err:
-                                                logger.warning("Could not resolve user '%s' for column '%s': %s — skipping field", v, k, _resolve_err)
+                                                # If seed-data email is invalid, fall back to current authenticated user.
+                                                if fallback_user_email and fallback_user_email.lower() != v.lower():
+                                                    try:
+                                                        fallback_principal_id = await _principal_repo.ensure_user_principal_id(
+                                                            fallback_user_email, site_id=site_id
+                                                        )
+                                                        resolved_item[f"{k}LookupId"] = fallback_principal_id
+                                                        logger.info(
+                                                            "Resolved fallback user '%s' for unresolved value '%s' in column '%s'",
+                                                            fallback_user_email,
+                                                            v,
+                                                            k,
+                                                        )
+                                                    except Exception as _fallback_err:
+                                                        logger.warning(
+                                                            "Could not resolve user '%s' for column '%s': %s; fallback '%s' also failed: %s — skipping field",
+                                                            v,
+                                                            k,
+                                                            _resolve_err,
+                                                            fallback_user_email,
+                                                            _fallback_err,
+                                                        )
+                                                else:
+                                                    logger.warning("Could not resolve user '%s' for column '%s': %s — skipping field", v, k, _resolve_err)
                                         else:
                                             resolved_item[k] = v
                                     resolved_seed.append(resolved_item)

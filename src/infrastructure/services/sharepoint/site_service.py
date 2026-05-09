@@ -33,19 +33,27 @@ class SiteService:
 
 
         
-        # Map templates to teamSite or communicationSite as recommended by actual Graph API behavior
+        # Map user-facing template names to the siteTemplateType enum values accepted by
+        # POST /beta/sites: "sts" (team site) or "sitepagepublishing" (communication site).
         template_map = {
-            "sts": "teamSite",
-            "teamsite": "teamSite",
-            "team": "teamSite",
-            "group": "teamSite",
-            "sitepagepublishing": "communicationSite",
-            "communicationsite": "communicationSite",
-            "sitepage": "communicationSite",
+            "sts": "sts",
+            "teamsite": "sts",
+            "team": "sts",
+            "group": "sts",
+            "sitepagepublishing": "sitepagepublishing",
+            "communicationsite": "sitepagepublishing",
+            "sitepage": "sitepagepublishing",
         }
-        site_template = template_map.get(sp_site.template.lower(), "teamSite")
+        site_template = template_map.get(sp_site.template.lower(), "sts")
 
-        # Get hostname for siteCollection
+        # Communication sites are unreliable through Graph beta in many tenants.
+        # Route them directly to the REST fallback (_api/SPSiteManager/create) which is
+        # what enterprise provisioning systems use.
+        if site_template == "sitepagepublishing":
+            logger.info("[SiteService] Routing communication site '%s' to REST fallback.", sp_site.title)
+            return await self._create_site_rest_fallback(sp_site)
+
+        # Resolve tenant hostname for webUrl construction (team sites via Graph beta)
         from src.infrastructure.config import settings
         from urllib.parse import urlparse
         hostname = ""
@@ -56,24 +64,29 @@ class SiteService:
             tenants = getattr(settings, "ALLOWED_SHAREPOINT_TENANTS", "").split(",")
             if tenants and tenants[0]:
                 hostname = f"{tenants[0].strip()}.sharepoint.com"
-                
+
         safe_name = sp_site.name
         if not safe_name:
             import re
             safe_name = sp_site.title.lower().replace(" ", "")
             safe_name = re.sub(r'[^a-z0-9]', '', safe_name)
-                
+
+        # Minimal payload for team site (sts) via POST /beta/sites.
+        # locale must be a string. Avoid webUrl/name/owner initially — add back if needed.
         payload = {
-            "displayName": sp_site.title,
-            "description": sp_site.description or f"Site created by SharePoint AI Agent: {sp_site.title}",
             "name": safe_name,
+            "description": sp_site.description or "",
             "template": site_template,
+            "locale": "en-US",
         }
-        
+
         if hostname:
-            payload["siteCollection"] = {
-                "hostname": hostname
-            }
+            payload["webUrl"] = f"https://{hostname}/sites/{safe_name}"
+
+        # Include owner if provided
+        owner_email = getattr(sp_site, "owner_email", None) or getattr(sp_site, "owner", None)
+        if owner_email and "@" in str(owner_email):
+            payload["ownerIdentityToResolve"] = {"email": owner_email}
 
         # Log actual payload being sent to Graph
         logger.info("[SiteService] Request Body sent to Graph POST /beta/sites: %s", json.dumps(payload))
@@ -89,6 +102,16 @@ class SiteService:
             logger.error("Graph API site creation failed for '%s'. Error: %s", sp_site.title, str(e))
             if hasattr(e, 'response') and e.response:
                 logger.error("[SiteService] Graph Error Status: %s, Body: %s", e.response.status_code, e.response.text)
+
+            err_text = str(e)
+            err_lower = err_text.lower()
+            if "don't have permission" in err_lower or "does not have permission" in err_lower or "access denied" in err_lower:
+                raise SharePointProvisioningException(
+                    f"Failed to create site '{sp_site.title}'. Your account can edit existing sites, "
+                    f"but tenant-level site creation via Microsoft Graph is blocked for this app/user context. "
+                    f"Ask your tenant admin to allow site creation for your account/app (Graph Sites.FullControl.All or "
+                    f"equivalent SharePoint admin rights). Original error: {err_text}"
+                ) from e
             
             # Re-raise instead of falling back to REST to prevent inconsistent states
             raise SharePointProvisioningException(

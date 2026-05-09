@@ -257,6 +257,18 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
         # Expand with synonyms so "tasks" can match "Work Items", etc.
         q_tokens_expanded = _expand_with_synonyms(q_tokens)
 
+        # Query-specialisation guardrails:
+        # "employee of the month" should prefer dedicated recognition resources
+        # and avoid defaulting to kudos feeds unless the user explicitly asked
+        # for kudos.
+        _q_lower = question.lower()
+        _is_employee_of_month_query = (
+            "employee of the month" in _q_lower
+            or "employeeofmonth" in q_tokens
+            or ({"employee", "month"} <= q_tokens)
+        )
+        _explicit_kudos_query = "kudos" in q_tokens or "kudo" in q_tokens
+
         # HITL Phase 1: merge ConceptMapper expanded tokens + resource_hint
         try:
             from src.infrastructure.services.concept_mapper import ConceptMapper
@@ -271,8 +283,24 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
         pass1: List[ResourceCandidate] = []
         for c in candidates:
             score = _title_score(q_tokens_expanded, c.title)
-
             _title_toks = _tokenise(c.title)
+
+            if _is_employee_of_month_query:
+                if "employeeofmonth" in _title_toks or ({"employee", "month"} <= _title_toks):
+                    # Massive boost for recognition/employee-of-month resources
+                    score = 0.95
+                    logger.info(
+                        "Employee-of-month BOOST: '%s' (contains employee+month pattern) → score=0.95",
+                        c.title
+                    )
+                if not _explicit_kudos_query and ("kudos" in _title_toks or "kudo" in _title_toks):
+                    # Severe penalty for kudos resources in employee-of-month queries
+                    score = 0.0
+                    logger.info(
+                        "Employee-of-month PENALTY: '%s' (kudos in title, not explicit kudos query) → score=0.0",
+                        c.title
+                    )
+
             if _title_toks and _title_toks.issubset(q_tokens_expanded):
                 score = min(score + 0.4, 1.0)
             # Resource-type preference bonus

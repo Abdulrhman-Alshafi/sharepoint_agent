@@ -1,7 +1,7 @@
 """AI service for parsing list item operation requests."""
 
 from typing import Dict, Any, Optional, Literal, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from src.infrastructure.external_services.ai_client_factory import get_instructor_client
 from src.infrastructure.logging import get_logger
 
@@ -77,6 +77,26 @@ class ListItemOperation(BaseModel):
         default=None,
         description="List of fields to include in the view"
     )
+
+    @field_validator("attachment_operation", mode="before")
+    @classmethod
+    def normalize_attachment_operation(cls, value: Any) -> Any:
+        """Convert empty/invalid attachment_operation values to None.
+
+        The AI can emit attachment_operation='' even when operation is not
+        'attach'. That should not fail parsing for normal create/update/query
+        item requests.
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if not v:
+                return None
+            if v in {"add", "list", "delete"}:
+                return v
+            return None
+        return None
 
 
 class ListItemParserService:

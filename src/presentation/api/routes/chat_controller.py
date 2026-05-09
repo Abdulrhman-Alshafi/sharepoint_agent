@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 
 from src.infrastructure.rate_limiter import limiter
 from src.infrastructure.config import settings
-from src.presentation.api import get_provisioning_service, get_data_query_service, get_intent_classifier, ServiceContainer
+from src.presentation.api import get_provisioning_service, get_data_query_service, get_intent_classifier, ServiceContainer, get_repository
 from src.presentation.api.dependencies import get_current_user
 from src.infrastructure.services.user_status_service import require_active_user
 from src.presentation.api.schemas.chat_schemas import ChatRequest, ChatResponse
@@ -79,7 +79,7 @@ async def chat_upload(
         )
 
     # 4. Fetch libraries
-    repo = ServiceContainer._get_repository_class()(user_token=raw_token) if raw_token else ServiceContainer.get_repository()
+    repo = get_repository(user_token=raw_token)
     try:
         libraries = await repo.get_all_document_libraries()
     except Exception as lib_err:
@@ -179,7 +179,7 @@ async def chat(
                     reply="⏰ The file(s) you uploaded earlier have expired. Please attach the file(s) again.",
                 )
                 
-            repo = ServiceContainer._get_repository_class()(user_token=raw_token, site_id=site_id) if raw_token else ServiceContainer.get_repository()
+            repo = get_repository(user_token=raw_token, site_id=site_id)
             try:
                 libraries = await repo.get_all_document_libraries(site_id=site_id)
             except Exception:

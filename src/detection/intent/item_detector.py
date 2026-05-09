@@ -34,6 +34,7 @@ _PERSONAL_QUERY_PHRASES = (
     "what did i", "what have i", "did i create", "did i add",
     "comment on my", "replied to my", "any comments on my",
     "anyone comment", "who commented on my",
+    "i have received", "i received", "received by me", "kudos i have received",
 )
 
 # ── Layer 2: item-add phrases ────────────────────────────────────────────────

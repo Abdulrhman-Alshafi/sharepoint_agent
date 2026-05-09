@@ -59,25 +59,44 @@ class LibraryProvisioner:
                             if isinstance(item, dict) and item.get("type") not in ("folder", "folder_path")
                         ]
 
+                        created_paths = set()
                         for folder_entry in folder_entries:
                             folder_name = folder_entry.get("name") or folder_entry.get("folder")
                             parent_path = folder_entry.get("parent_folder_path") or folder_entry.get("path")
-                            if folder_name:
+                            if not folder_name:
+                                continue
+
+
+                            base_parts = [p.strip() for p in str(parent_path or "").split("/") if str(p).strip()]
+                            name_parts = [p.strip() for p in str(folder_name).split("/") if str(p).strip()]
+                            if not name_parts:
+                                continue
+
+                            all_parts = base_parts + name_parts
+                            for idx in range(len(base_parts), len(all_parts)):
+                                current_name = all_parts[idx]
+                                current_parent_parts = all_parts[:idx]
+                                current_parent = "/".join(current_parent_parts) if current_parent_parts else None
+                                current_full_path = "/".join(all_parts[: idx + 1])
+                                if current_full_path in created_paths:
+                                    continue
                                 try:
                                     await self.repository.create_folder(
-                                        lib_id, folder_name, parent_path
+                                        lib_id, current_name, current_parent
                                     )
+                                    created_paths.add(current_full_path)
                                     logger.info(
                                         "Created seed folder '%s' in library '%s'",
-                                        folder_name, library.title,
+                                        current_full_path, library.title,
                                     )
                                 except Exception as folder_err:
                                     warning_msg = (
-                                        f"Could not create seed folder '{folder_name}' "
+                                        f"Could not create seed folder '{current_full_path}' "
                                         f"in library '{library.title}': {folder_err}"
                                     )
                                     logger.warning("%s", warning_msg)
                                     warnings.append(warning_msg)
+                                    break
 
                         if list_item_entries:
                             await self.repository.seed_list_data(lib_id, list_item_entries)

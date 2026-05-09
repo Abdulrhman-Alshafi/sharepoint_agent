@@ -260,7 +260,7 @@ Examples:
         field_map = {
             ResourceType.LIST: ["title", "description", "columns", "column_types", "add_sample_data"],
             ResourceType.PAGE: ["title", "content_type", "main_content"],
-            ResourceType.LIBRARY: ["title", "description", "create_folders", "folder_paths", "needs_permissions", "permission_groups"],
+            ResourceType.LIBRARY: ["title", "description", "create_folders", "folder_paths"],
             ResourceType.GROUP: ["name", "permission_level", "target_resource"],
             ResourceType.CONTENT_TYPE: ["name", "description", "columns"],
             ResourceType.TERM_SET: ["name", "terms"],

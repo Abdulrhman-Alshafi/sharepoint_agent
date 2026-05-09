@@ -14,7 +14,6 @@ A production-ready AI-powered agent that translates natural language prompts int
 - [API Endpoints](#api-endpoints)
 - [DDD / Clean Architecture Principles](#ddd--clean-architecture-principles)
 - [Design Patterns](#design-patterns)
-- [Testing](#testing)
 - [Docker](#docker)
 - [Adding New Features](#adding-new-features)
 - [Troubleshooting](#troubleshooting)
@@ -25,11 +24,11 @@ A production-ready AI-powered agent that translates natural language prompts int
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.11+
 - pip or conda
 - Azure AD credentials (Tenant ID, Client ID, Client Secret)
-- A Gemini API key **or** an Ollama instance running locally
-- (Optional) Redis — used for persistent conversation state
+- An AI provider: **Gemini API key**, **Vertex AI** service account, or an **OpenAI-compatible** endpoint (Groq, Ollama, etc.)
+- (Optional) Redis — used for persistent conversation state, distributed rate limiting, and security controls
 - (Optional) Docker + Docker Compose
 
 ### Installation
@@ -45,25 +44,43 @@ cp .env.example .env
 ### Environment Variables
 
 ```env
-# AI provider (gemini | ollama)
-GEMINI_API_KEY=your_gemini_key
-GEMINI_MODEL=gemini-1.5-flash
+# AI provider (gemini | vertexai | openai)
+AI_PROVIDER=gemini
 
-# API security
-API_KEY=your_api_key
+# ── Gemini ──
+GEMINI_API_KEY=your_gemini_key
+GEMINI_MODEL=gemini-2.0-flash
+
+# ── Vertex AI (Google Cloud) ──
+# VERTEXAI_PROJECT_ID=your_gcp_project_id
+# VERTEXAI_LOCATION=us-central1
+# VERTEXAI_MODEL=gemini-2.5-flash
+# VERTEXAI_CLIENT_EMAIL=your-sa@project.iam.gserviceaccount.com
+# VERTEXAI_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
+# ── OpenAI-Compatible (Groq, Ollama, etc.) ──
+# OPENAI_API_KEY=your_key
+# OPENAI_BASE_URL=https://api.groq.com/openai/v1
+# OPENAI_MODEL=llama3-8b-8192
 
 # Azure AD / Microsoft Graph
 TENANT_ID=your_azure_tenant_id
 CLIENT_ID=your_azure_client_id
 CLIENT_SECRET=your_azure_client_secret
-
-# SharePoint
 SITE_ID=your_sharepoint_site_id
-SHAREPOINT_BASE_URL=https://yourtenant.sharepoint.com
 
-# Optional: Redis conversation state
-REDIS_URL=redis://localhost:6379
+# CORS — tenant allowlist (recommended for production)
+ALLOWED_SHAREPOINT_TENANTS=yourtenant
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:4321
+
+# Optional: Redis for distributed state
+REDIS_URL=redis://redis:6379/0
+
+# OBO token cache TTL (seconds, default: 900)
+OBO_CACHE_TTL_SECONDS=900
 ```
+
+> **Note:** API Key authentication has been removed. All requests require Azure AD JWT tokens via the On-Behalf-Of (OBO) flow.
 
 ### Running the Application
 
@@ -73,9 +90,6 @@ uvicorn src.main:app --reload
 
 # Production server
 uvicorn src.main:app --host 0.0.0.0 --port 8000
-
-# Or use the helper script
-bash run_local.sh
 ```
 
 Access the API:
@@ -91,12 +105,17 @@ Access the API:
 
 ## 🏗️ Architecture Overview
 
-### 4-Layer Clean Architecture
+### 5-Layer Clean Architecture
 
 ```
 ┌─────────────────────────────────────────┐
 │   PRESENTATION LAYER                    │
-│   HTTP Endpoints, Schemas, Handlers     │
+│   Controllers, Orchestrators, Services  │
+└────────────────────┬────────────────────┘
+                     │ depends on
+┌────────────────────▼────────────────────┐
+│   DETECTION LAYER                       │
+│   Intent, Classification, Routing       │
 └────────────────────┬────────────────────┘
                      │ depends on
 ┌────────────────────▼────────────────────┐
@@ -121,8 +140,9 @@ Access the API:
 |-------|---------|-------------|---------------------|
 | **Domain** | Pure business logic | Entities, Value Objects, Repository interfaces, Domain Services | None |
 | **Application** | Orchestrate use cases | Use Cases, Application Services, Commands, DTOs | Domain |
+| **Detection** | Cross-cutting NL pattern detection | Intent detectors, Classifiers, Routers, Semantic analysers | Domain |
 | **Infrastructure** | External integrations | Graph API client, AI services, Repositories, Schemas | Domain, Application |
-| **Presentation** | HTTP API | FastAPI routers, Request handlers, Response schemas | Application, Domain |
+| **Presentation** | HTTP API (Controller → Orchestrator → Service) | Controllers, Orchestrators, Intent routing, API services | Application, Detection, Domain |
 
 ---
 
@@ -131,7 +151,7 @@ Access the API:
 ```
 sharepoint_ai/
 ├── src/
-│   ├── main.py                            # FastAPI app factory + startup
+│   ├── main.py                            # FastAPI app factory + middleware
 │   │
 │   ├── domain/                            # Pure business logic (no framework deps)
 │   │   ├── entities/
@@ -139,24 +159,60 @@ sharepoint_ai/
 │   │   │   ├── conversation.py            # Conversation / message entities
 │   │   │   ├── document.py                # Document entities
 │   │   │   ├── enterprise.py              # Enterprise site/hub entities
+│   │   │   ├── page_content_templates.py  # Page content template definitions
 │   │   │   ├── preview.py                 # Blueprint preview entities
 │   │   │   ├── query.py                   # Query result entities
 │   │   │   ├── security.py                # Permission / security entities
 │   │   │   └── templates.py               # Provisioning template entities
 │   │   ├── value_objects/
+│   │   │   ├── page_purpose.py            # Page purpose value object
 │   │   │   └── resource_candidate.py      # Smart resource discovery candidates
 │   │   ├── repositories/                  # Abstract repository interfaces
+│   │   │   ├── enterprise_repository.py
+│   │   │   ├── library_repository.py
 │   │   │   ├── list_repository.py
 │   │   │   ├── page_repository.py
-│   │   │   ├── library_repository.py
-│   │   │   ├── site_repository.py
 │   │   │   ├── permission_repository.py
-│   │   │   ├── enterprise_repository.py
-│   │   │   └── hub_site_registry.py
+│   │   │   └── site_repository.py
 │   │   ├── services/                      # Domain service interfaces
 │   │   │   ├── intent_classification.py
+│   │   │   ├── page_purpose_detector.py   # Page purpose detection logic
 │   │   │   └── smart_resource_discovery.py
 │   │   └── exceptions/                    # Domain exception hierarchy
+│   │
+│   ├── detection/                         # Cross-cutting NL pattern detection
+│   │   ├── base.py                        # DetectionResult, scoring utilities
+│   │   ├── intent/                        # Intent detectors
+│   │   │   ├── analyze_detector.py
+│   │   │   ├── delete_detector.py
+│   │   │   ├── item_detector.py
+│   │   │   ├── page_detector.py
+│   │   │   ├── router.py                  # Intent routing coordinator
+│   │   │   └── update_detector.py
+│   │   ├── classification/                # NL classifiers
+│   │   │   ├── page_purpose_classifier.py
+│   │   │   └── template_classifier.py
+│   │   ├── matching/                      # Pattern matching utilities
+│   │   │   ├── library_matcher.py
+│   │   │   ├── location_hint_detector.py
+│   │   │   └── query_classifier.py
+│   │   ├── operations/                    # Operation-type detectors
+│   │   │   ├── enterprise_operation_detector.py
+│   │   │   ├── file_operation_detector.py
+│   │   │   ├── library_operation_detector.py
+│   │   │   ├── list_item_operation_detector.py
+│   │   │   ├── page_operation_detector.py
+│   │   │   ├── permission_operation_detector.py
+│   │   │   └── site_operation_detector.py
+│   │   ├── routing/                       # Content routing
+│   │   │   ├── page_content_router.py
+│   │   │   ├── resource_type_router.py
+│   │   │   └── webpart_router.py
+│   │   ├── semantic/                      # Semantic analysis
+│   │   │   ├── concept_mapper.py
+│   │   │   └── synonym_expander.py
+│   │   └── validation/                    # Validation detectors
+│   │       └── confirmation_detector.py
 │   │
 │   ├── application/                       # Use cases & orchestration
 │   │   ├── use_cases/
@@ -172,7 +228,7 @@ sharepoint_ai/
 │   │   │   ├── list_item_batch_use_case.py
 │   │   │   ├── list_item_operations_use_case.py
 │   │   │   ├── list_item_views_use_case.py
-│   │   │   └── provisioners/              # Dedicated provisioners per resource type
+│   │   │   └── provisioners/              # Dedicated provisioners per resource
 │   │   │       ├── site_provisioner.py
 │   │   │       ├── list_provisioner.py
 │   │   │       ├── page_provisioner.py
@@ -180,12 +236,13 @@ sharepoint_ai/
 │   │   │       ├── group_provisioner.py
 │   │   │       └── enterprise_provisioner.py
 │   │   ├── services/
-│   │   │   ├── audit_service.py           # Audit logging service
-│   │   │   ├── governance_service.py      # Governance / policy enforcement
-│   │   │   ├── requirement_gathering_service.py  # Multi-turn requirement gathering
-│   │   │   ├── smart_question_service.py  # Dynamic clarifying questions
-│   │   │   ├── question_templates.py      # Reusable question templates
-│   │   │   └── template_registry.py       # Provisioning template registry
+│   │   │   ├── audit_service.py
+│   │   │   ├── governance_service.py
+│   │   │   ├── requirement_gathering_service.py
+│   │   │   ├── smart_question_service.py
+│   │   │   ├── smart_suggestions.py       # AI-powered smart suggestions
+│   │   │   ├── question_templates.py
+│   │   │   └── template_registry.py
 │   │   ├── commands/                      # Command objects (user intentions)
 │   │   ├── converters/                    # Domain <-> DTO converters
 │   │   └── dtos/                          # Data transfer objects
@@ -195,18 +252,19 @@ sharepoint_ai/
 │   │   ├── graph_service.py               # Low-level Graph API entry point
 │   │   ├── rate_limiter.py                # Request rate limiting
 │   │   ├── logging.py                     # Structured logging setup
-│   │   ├── external_services/             # AI parsers & intelligence services
-│   │   │   ├── ai_blueprint_generator.py  # Gemini/Ollama blueprint generation
-│   │   │   ├── ai_client_factory.py       # AI provider factory (Gemini / Ollama)
-│   │   │   ├── ai_data_query_service.py   # AI-powered data querying
-│   │   │   ├── ai_intent_classification.py # NL intent -> operation type
-│   │   │   ├── document_intelligence.py   # Document understanding
-│   │   │   ├── library_intelligence.py    # Library analysis intelligence
-│   │   │   ├── query_intelligence.py      # Query result analysis
+│   │   ├── correlation.py                 # X-Request-ID correlation tracking
+│   │   ├── resilience.py                  # Retry / circuit-breaker logic
+│   │   ├── external_services/             # AI parsers & intelligence
+│   │   │   ├── ai_blueprint_generator.py
+│   │   │   ├── ai_client_factory.py       # AI provider factory (Gemini/VertexAI/OpenAI)
+│   │   │   ├── ai_data_query_service.py
+│   │   │   ├── ai_intent_classification.py
+│   │   │   ├── document_intelligence.py
+│   │   │   ├── library_intelligence.py
+│   │   │   ├── query_intelligence.py
 │   │   │   ├── site_resolver.py           # Fuzzy site name resolution
 │   │   │   ├── enterprise_operation_parser.py
 │   │   │   ├── file_operation_parser.py
-│   │   │   ├── hub_site_operation_parser.py
 │   │   │   ├── library_operation_parser.py
 │   │   │   ├── list_item_parser.py
 │   │   │   ├── page_operation_parser.py
@@ -217,38 +275,57 @@ sharepoint_ai/
 │   │   │       ├── prompts.py
 │   │   │       ├── helpers.py
 │   │   │       ├── data_mixin.py
-│   │   │       ├── hub_mixin.py
 │   │   │       ├── library_mixin.py
-│   │   │       └── metadata_mixin.py
-│   │   ├── repositories/                  # Repository implementations
+│   │   │       ├── metadata_mixin.py
+│   │   │       └── page_mixin.py
+│   │   ├── repositories/
 │   │   │   ├── graph_sharepoint_repository.py
-│   │   │   ├── conversation_state_repository.py    # In-memory conversation state
-│   │   │   ├── redis_conversation_state_repository.py  # Redis-backed conversation state
-│   │   │   └── utils/                     # Graph API helpers
+│   │   │   ├── conversation_state_repository.py
+│   │   │   ├── redis_conversation_state_repository.py
+│   │   │   └── utils/
 │   │   │       ├── canvas_builder.py
 │   │   │       ├── canvas_editor.py
 │   │   │       ├── payload_builders.py
 │   │   │       ├── url_helpers.py
 │   │   │       ├── error_handlers.py
-│   │   │       └── constants.py
-│   │   ├── services/                      # Infrastructure service implementations
-│   │   │   ├── authentication_service.py  # MSAL token acquisition
-│   │   │   ├── base_api_client.py         # Shared HTTP client base class
+│   │   │       ├── constants.py
+│   │   │       └── webpart_composer.py
+│   │   ├── services/
+│   │   │   ├── authentication_service.py  # MSAL OBO token acquisition
+│   │   │   ├── base_api_client.py
 │   │   │   ├── graph_api_client.py        # Microsoft Graph API client
 │   │   │   ├── rest_api_client.py         # SharePoint REST API client
-│   │   │   ├── batch_operations_service.py # Graph API $batch requests
-│   │   │   ├── cache_service.py           # In-memory / TTL cache
-│   │   │   ├── content_analyzer.py        # Content analysis utilities
-│   │   │   ├── document_index.py          # Document vector index
-│   │   │   ├── document_parser.py         # File parsing (PDF, DOCX, etc.)
-│   │   │   ├── duplicate_name_resolver.py # Resolve name collisions
-│   │   │   ├── field_validator.py         # SharePoint field validation
-│   │   │   ├── hub_site_registry_service.py # Hub site registry
-│   │   │   ├── input_sanitizer.py         # Input sanitization & XSS prevention
-│   │   │   ├── smart_resource_discovery.py # NL -> resource lookup
-│   │   │   ├── token_validation_service.py # API key / JWT validation
-│   │   │   ├── web_part_decision_engine.py # Web part selection logic
-│   │   │   ├── heft_compiler_service.py   # HEFT build integration
+│   │   │   ├── batch_operations_service.py
+│   │   │   ├── cache_service.py
+│   │   │   ├── clarification_engine.py
+│   │   │   ├── concept_mapper.py
+│   │   │   ├── concept_memory.py
+│   │   │   ├── content_analyzer.py
+│   │   │   ├── content_template_manager.py
+│   │   │   ├── context_normalizer.py
+│   │   │   ├── cross_resource_synthesizer.py
+│   │   │   ├── document_index.py
+│   │   │   ├── document_parser.py
+│   │   │   ├── duplicate_name_resolver.py
+│   │   │   ├── embedding_service.py
+│   │   │   ├── field_validator.py
+│   │   │   ├── input_sanitizer.py
+│   │   │   ├── list_item_index.py
+│   │   │   ├── multi_hop_retriever.py
+│   │   │   ├── ontology_expander.py
+│   │   │   ├── page_content_generator.py
+│   │   │   ├── person_field_resolver.py
+│   │   │   ├── query_resilience.py
+│   │   │   ├── query_telemetry.py
+│   │   │   ├── redis_security_store.py
+│   │   │   ├── section_index.py
+│   │   │   ├── smart_resource_discovery.py
+│   │   │   ├── tenant_users_service.py
+│   │   │   ├── token_validation_service.py
+│   │   │   ├── user_status_service.py
+│   │   │   ├── web_part_decision_engine.py
+│   │   │   ├── webpart_index.py
+│   │   │   ├── heft_compiler_service.py
 │   │   │   └── sharepoint/               # Operation-specific service modules
 │   │   │       ├── site_service.py
 │   │   │       ├── list_service.py
@@ -258,8 +335,9 @@ sharepoint_ai/
 │   │   │       ├── data_service.py
 │   │   │       ├── enterprise_service.py
 │   │   │       ├── permission_service.py
-│   │   │       └── search_service.py
-│   │   └── schemas/                       # Pydantic schemas for infra payloads
+│   │   │       ├── search_service.py
+│   │   │       └── webpart_reader_service.py
+│   │   └── schemas/
 │   │       ├── blueprint_schemas.py
 │   │       ├── query_schemas.py
 │   │       └── validation_schemas.py
@@ -268,81 +346,93 @@ sharepoint_ai/
 │       ├── api/
 │       │   ├── router.py                  # Route aggregation
 │       │   ├── dependencies.py            # FastAPI dependency providers
-│       │   ├── provision.py               # POST /api/v1/provision/
-│       │   ├── chat.py                    # POST /api/v1/chat/
-│       │   ├── query.py                   # POST /api/v1/query/
-│       │   ├── files.py                   # File upload / download endpoints
-│       │   ├── library_analysis.py        # Library analysis endpoints
-│       │   ├── handlers/                  # Intent-based request handlers
-│       │   │   ├── site_handler.py
-│       │   │   ├── item_handler.py
-│       │   │   ├── library_handler.py
-│       │   │   ├── page_handler.py
-│       │   │   ├── file_handler.py
-│       │   │   ├── permission_handler.py
-│       │   │   ├── enterprise_handler.py
-│       │   │   ├── hub_site_handler.py
-│       │   │   ├── analysis_handler.py
-│       │   │   ├── delete_handler.py
-│       │   │   ├── update_handler.py
-│       │   │   └── handler_utils.py
+│       │   ├── routes/                    # Thin HTTP controllers
+│       │   │   ├── chat_controller.py     # POST /chat/, POST /chat/upload
+│       │   │   ├── file_controller.py     # POST /files/query
+│       │   │   ├── library_controller.py  # POST /libraries/analyze
+│       │   │   ├── provision_controller.py # POST /provision/
+│       │   │   └── query_controller.py    # POST /query/
+│       │   ├── orchestrators/             # Business logic orchestration
+│       │   │   ├── chat_orchestrator.py
+│       │   │   ├── site_orchestrator.py
+│       │   │   ├── page_orchestrator.py
+│       │   │   ├── item_orchestrator.py
+│       │   │   ├── file_orchestrator.py
+│       │   │   ├── library_orchestrator.py
+│       │   │   ├── delete_orchestrator.py
+│       │   │   ├── update_orchestrator.py
+│       │   │   ├── permission_orchestrator.py
+│       │   │   ├── enterprise_orchestrator.py
+│       │   │   ├── analysis_orchestrator.py
+│       │   │   └── orchestrator_utils.py
+│       │   ├── intent/                    # Intent routing for presentation
+│       │   │   ├── intent_router.py
+│       │   │   ├── delete_intent.py
+│       │   │   ├── item_intent.py
+│       │   │   ├── page_intent.py
+│       │   │   └── update_intent.py
+│       │   ├── handlers/                  # Legacy intent-based handlers
+│       │   ├── services/                  # Presentation-layer services
+│       │   │   ├── clarification_service.py
+│       │   │   ├── conversation_state.py
+│       │   │   ├── library_matcher.py
+│       │   │   ├── upload_service.py
+│       │   │   └── validation_service.py
 │       │   ├── utils/
 │       │   │   ├── message_resolver.py
 │       │   │   ├── prompt_builder.py
 │       │   │   └── response_formatter.py
 │       │   └── schemas/
 │       │       └── chat_schemas.py
-│       └── schemas/                       # HTTP request/response Pydantic models
-│
-├── tests/
-│   ├── conftest.py                        # Shared fixtures & mocks
-│   ├── domain_test.py                     # Domain entity / logic tests
-│   ├── application_test.py                # Use case tests (mocked repos)
-│   ├── integration_test.py                # Endpoint integration tests
-│   ├── test_handlers.py                   # Presentation handler tests
-│   ├── test_list_item_operations.py       # List item CRUD tests
-│   ├── test_rate_limiting.py              # Rate limiter tests
-│   ├── test_site_service.py               # Site service tests
-│   └── application/ domain/ infrastructure/ integration/ presentation/
+│       └── schemas/                       # Shared HTTP Pydantic models
 │
 ├── data/
 │   └── document_index/                    # Persisted document vector index
 │
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt
-├── pytest.ini
-├── run_local.sh
-├── run_docker_with_ollama.sh
-├── restart_server.sh
-└── restart_docker.sh
+└── requirements.txt
 ```
 
 ---
 
 ## 🌐 API Endpoints
 
+All endpoints require **Azure AD JWT** tokens via the `Authorization: Bearer <token>` header. Authentication uses the On-Behalf-Of (OBO) flow.
+
 ### Chat (Conversational AI Agent)
 
 **POST** `/api/v1/chat/`
 
-Send a natural language message. The agent classifies intent and routes to the appropriate handler automatically.
+Send a natural language message. The agent classifies intent and routes to the appropriate orchestrator automatically.
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat/ \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your_api_key" \
-  -d '{"message": "Create a project tasks list with status and due date columns"}'
+  -H "Authorization: Bearer <azure_ad_token>" \
+  -d '{"message": "Create a project tasks list with status and due date columns", "site_id": "your-site-id"}'
 ```
 
 **Response**:
 ```json
 {
-  "response": "I have created the 'Project Tasks' list with Status and DueDate columns.",
-  "conversation_id": "conv-abc123",
-  "intent": "create_list",
-  "actions_taken": []
+  "reply": "I have created the 'Project Tasks' list with Status and DueDate columns.",
+  "session_id": "conv-abc123",
+  "intent": "create_list"
 }
+```
+
+### Chat File Upload
+
+**POST** `/api/v1/chat/upload`
+
+Upload files to SharePoint libraries via natural language.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/chat/upload \
+  -H "Authorization: Bearer <azure_ad_token>" \
+  -F "file=@document.pdf" \
+  -F "message=add to Documents library"
 ```
 
 ### Provision Resources
@@ -354,20 +444,8 @@ Directly provision SharePoint resources from a structured prompt.
 ```bash
 curl -X POST http://localhost:8000/api/v1/provision/ \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Create an HR document library with department and retention columns"}'
-```
-
-**Response**:
-```json
-{
-  "blueprint": {
-    "reasoning": "...",
-    "lists": [...],
-    "pages": [...]
-  },
-  "created_lists": [...],
-  "created_pages": [...]
-}
+  -H "Authorization: Bearer <azure_ad_token>" \
+  -d '{"prompt": "Create an HR document library with department and retention columns", "site_id": "your-site-id"}'
 ```
 
 ### Query Data
@@ -379,26 +457,35 @@ Query SharePoint data with natural language.
 ```bash
 curl -X POST http://localhost:8000/api/v1/query/ \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show me all tasks due this week with status Pending"}'
+  -H "Authorization: Bearer <azure_ad_token>" \
+  -d '{"question": "Show me all tasks due this week with status Pending", "site_id": "your-site-id"}'
 ```
 
 ### File Operations
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/files/upload/` | Upload a file to a library |
-| GET | `/api/v1/files/{drive_id}/{item_id}` | Download a file |
+| POST | `/api/v1/files/query` | Query and filter files via natural language |
 
 ### Library Analysis
 
-**GET** `/api/v1/library-analysis/{library_name}` — Analyse a document library's structure and contents.
+**POST** `/api/v1/libraries/analyze` — Analyse a document library's metadata structure.
 
 ### Health Check
 
-**GET** `/health`
+**GET** `/health` or `/api/v1/health`
+
+Returns service health including Graph API, AI provider, and SharePoint site connectivity status.
 
 ```json
-{"status": "healthy"}
+{
+  "status": "healthy",
+  "services": {
+    "graph_api": "healthy",
+    "ai_provider": "healthy",
+    "sharepoint_site": "healthy"
+  }
+}
 ```
 
 ---
@@ -415,10 +502,10 @@ curl -X POST http://localhost:8000/api/v1/query/ \
 - Infrastructure **implements** those interfaces
 - Application depends on abstractions, never concretions
 
-### Testability
-- Pure domain logic tested without any external dependencies
-- Repository pattern enables clean mock implementations
-- Use cases tested with injected mocks
+### Controller → Orchestrator → Service (Presentation Layer)
+- **Controllers** (`routes/`) are thin HTTP endpoints that handle request/response only
+- **Orchestrators** contain the business logic coordination for each resource domain
+- **Services** provide shared utilities (conversation state, validation, file upload)
 
 ### SOLID Principles
 - **S** — Single Responsibility: one reason to change per class
@@ -432,56 +519,19 @@ curl -X POST http://localhost:8000/api/v1/query/ \
 ## 🔧 Design Patterns
 
 | Pattern | Where Used |
-|---------|-----------|
+|---------|------------|
 | **Repository** | `domain/repositories/` → `infrastructure/repositories/` |
 | **Use Case** | `application/use_cases/` — one class per operation |
 | **Command** | `application/commands/` — encapsulate user intent |
 | **DTO** | `application/dtos/` — decouple domain from HTTP |
-| **Factory** | `ai_client_factory.py` — Gemini / Ollama provider selection |
+| **Factory** | `ai_client_factory.py` — Gemini / VertexAI / OpenAI provider selection |
 | **Strategy** | Provisioner classes per resource type |
-| **Mixin** | Query intelligence sub-package |
-| **Registry** | `template_registry.py`, `hub_site_registry_service.py` |
+| **Mixin** | Query intelligence sub-package (data, library, metadata, page) |
+| **Detector** | `detection/` — pure-function NL pattern detectors with confidence scores |
+| **Orchestrator** | `presentation/api/orchestrators/` — per-domain business logic coordination |
+| **Registry** | `template_registry.py` |
 | **Dependency Injection** | FastAPI `Depends()` + `dependencies.py` |
-
----
-
-## 🧪 Testing
-
-### Test Pyramid
-
-```
-tests/integration_test.py         <- Full HTTP flow (mocked AI/Graph)
-tests/test_handlers.py            <- Presentation handler tests
-tests/application_test.py         <- Use case tests (mocked repos)
-tests/domain_test.py              <- Pure domain logic (no mocking)
-tests/test_list_item_operations.py
-tests/test_rate_limiting.py
-tests/test_site_service.py
-```
-
-### Running Tests
-
-```bash
-# All tests
-pytest tests/ -v
-
-# Single layer
-pytest tests/domain_test.py -v
-pytest tests/application_test.py -v
-pytest tests/integration_test.py -v
-
-# With coverage
-pytest tests/ --cov=src --cov-report=html
-
-# Pattern filter
-pytest tests/ -k "list" -v
-```
-
-### Shared Fixtures (`tests/conftest.py`)
-
-- `mock_sharepoint_repo` — async mock of `GraphAPISharePointRepository`
-- `mock_ai_generator` — async mock of `AIBlueprintGenerator`
-- `test_client` — FastAPI `TestClient` with overridden dependencies
+| **Middleware** | Correlation ID, User Identification, CORS |
 
 ---
 
@@ -490,17 +540,13 @@ pytest tests/ -k "list" -v
 ### Docker Compose (recommended)
 
 ```bash
-# Standard startup
+# Standard startup (includes Redis)
 docker-compose up --build
-
-# With Ollama (local LLM)
-bash run_docker_with_ollama.sh
 ```
 
 The `docker-compose.yml` includes:
-- `api` — FastAPI application
-- `redis` — conversation state persistence (optional profile)
-- Ollama profile — local LLM support
+- `sharepoint-ai` — FastAPI application (Python 3.11)
+- `redis` — Distributed state persistence (conversation state, security controls, rate limiting)
 
 ### Manual Docker
 
@@ -524,14 +570,21 @@ Follow these steps to add a new resource operation whilst preserving clean archi
 async def archive_list(self, list_id: str) -> bool: ...
 ```
 
-**2. Infrastructure** — implement in `GraphAPISharePointRepository`:
+**2. Detection** — add an operation detector if needed:
+```python
+# src/detection/operations/list_archive_detector.py
+class ListArchiveDetector:
+    def detect(self, text: str) -> DetectionResult: ...
+```
+
+**3. Infrastructure** — implement in `GraphAPISharePointRepository`:
 ```python
 async def archive_list(self, list_id: str) -> bool:
     # Call Graph API
     ...
 ```
 
-**3. Application** — create a use case:
+**4. Application** — create a use case:
 ```python
 # src/application/use_cases/archive_list_use_case.py
 class ArchiveListUseCase:
@@ -543,9 +596,7 @@ class ArchiveListUseCase:
         return ArchiveListResponseDTO(success=success)
 ```
 
-**4. Presentation** — wire up to the relevant handler or add a new endpoint.
-
-**5. Tests** — add tests at each layer.
+**5. Presentation** — add an orchestrator and wire to the controller or intent router.
 
 ---
 
@@ -569,24 +620,25 @@ pip install -r requirements.txt --force-reinstall
 
 ### Authentication failures (Graph API)
 
-```python
-from src.infrastructure.config import settings
-print(settings.TENANT_ID, settings.CLIENT_ID)  # Must not be empty
-```
+This application uses **Azure AD On-Behalf-Of (OBO)** flow exclusively. Ensure:
+- The Azure App Registration has the correct **delegated** permissions
+- `TENANT_ID`, `CLIENT_ID`, and `CLIENT_SECRET` are set correctly
+- The user token passed in the `Authorization` header is valid
 
-Ensure the Azure App Registration has the following **application** permissions:
+Required Azure AD permissions:
 - `Sites.FullControl.All`
 - `Files.ReadWrite.All`
 - `User.Read.All`
 
 ### AI provider not responding
 
-- **Gemini**: verify `GEMINI_API_KEY` and model name (e.g. `gemini-1.5-flash`).
-- **Ollama**: ensure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull llama3`).
+- **Gemini**: verify `GEMINI_API_KEY` and model name (e.g. `gemini-2.0-flash`).
+- **Vertex AI**: verify `VERTEXAI_PROJECT_ID`, `VERTEXAI_CLIENT_EMAIL`, and `VERTEXAI_PRIVATE_KEY`.
+- **OpenAI-compatible** (Groq/Ollama): verify `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`.
 
 ### Redis connection refused
 
-If persistent conversation state is not needed, the application falls back to an in-memory store automatically. Set `REDIS_URL=` (empty) to disable Redis explicitly.
+If Redis is unavailable, the application falls back to in-memory storage automatically. Rate limits, auth state, and conversation history will not persist across restarts in this mode. A warning is logged at startup.
 
 ---
 
@@ -600,8 +652,8 @@ If persistent conversation state is not needed, the application falls back to an
 
 ---
 
-**Last Updated**: April 2026  
-**Architecture**: Domain-Driven Design + Clean Architecture  
-**Framework**: FastAPI + Pydantic  
-**Python Version**: 3.9+  
-**AI Providers**: Google Gemini, Ollama (local)
+**Last Updated**: May 2026
+**Architecture**: Domain-Driven Design + Clean Architecture (5-Layer)
+**Framework**: FastAPI + Pydantic
+**Python Version**: 3.11+
+**AI Providers**: Google Gemini, Vertex AI, OpenAI-compatible (Groq, Ollama)

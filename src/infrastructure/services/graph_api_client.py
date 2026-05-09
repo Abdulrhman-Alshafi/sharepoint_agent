@@ -192,12 +192,70 @@ class GraphAPIClient(BaseAPIClient):
             self._handle_request_error(exc, f"Graph API DELETE {endpoint}")
             return False
 
-    # Beta methods aliased to v1.0 for backward compatibility
-    async def get_beta(self, endpoint, params=None, extra_headers=None):
-        return await self.get(endpoint, params, extra_headers)
+    # ── beta methods — use beta_base_url, NOT v1.0 ────────────────────────────
+    async def get_beta(self, endpoint: str, params=None, extra_headers=None) -> Dict[str, Any]:
+        url = endpoint if endpoint.startswith("https://") else f"{self.beta_base_url}{endpoint}"
+        headers = await self._get_headers()
+        if extra_headers:
+            headers.update(extra_headers)
+        logger.debug("[GraphAPIClient] GET (beta) %s", url)
+        graph_breaker.check()
+        try:
+            response = await self.http.get(url, headers=headers, params=params)
+            self._raise_for_status(response, f"Graph API beta GET {endpoint}")
+            return response.json()
+        except (AuthenticationException, PermissionDeniedException, RateLimitError,
+                ExternalServiceUnavailableError, ExternalTimeoutError,
+                SharePointProvisioningException, SharePointAPIError):
+            raise
+        except httpx.RequestError as exc:
+            self._handle_request_error(exc, f"Graph API beta GET {endpoint}")
+            return {}
 
-    async def post_beta(self, endpoint, payload):
-        return await self.post(endpoint, payload)
+    async def post_beta(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = endpoint if endpoint.startswith("https://") else f"{self.beta_base_url}{endpoint}"
+        headers = await self._get_headers()
+        logger.info("[GraphAPIClient] POST (beta) %s, Payload: %s", url, json.dumps(payload))
+        graph_breaker.check()
+        try:
+            response = await self.http.post(url, headers=headers, json=payload)
+            logger.info("[GraphAPIClient] POST (beta) %s Status: %s, Body: %s", url, response.status_code, response.text)
+            self._raise_for_status(response, f"Graph API beta POST {endpoint}")
+            if response.status_code == 202:
+                location = response.headers.get("Location", "")
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                body["_provisioning"] = True
+                body["_poll_url"] = location
+                return body
+            if response.status_code == 204:
+                return {}
+            return response.json()
+        except (AuthenticationException, PermissionDeniedException, RateLimitError,
+                ExternalServiceUnavailableError, ExternalTimeoutError,
+                SharePointProvisioningException, SharePointAPIError):
+            raise
+        except httpx.RequestError as exc:
+            self._handle_request_error(exc, f"Graph API beta POST {endpoint}")
+            return {}
 
-    async def patch_beta(self, endpoint, payload):
-        return await self.patch(endpoint, payload)
+    async def patch_beta(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = endpoint if endpoint.startswith("https://") else f"{self.beta_base_url}{endpoint}"
+        headers = await self._get_headers()
+        logger.debug("[GraphAPIClient] PATCH (beta) %s", url)
+        graph_breaker.check()
+        try:
+            response = await self.http.patch(url, headers=headers, json=payload)
+            self._raise_for_status(response, f"Graph API beta PATCH {endpoint}")
+            if response.status_code == 204:
+                return {}
+            return response.json()
+        except (AuthenticationException, PermissionDeniedException, RateLimitError,
+                ExternalServiceUnavailableError, ExternalTimeoutError,
+                SharePointProvisioningException, SharePointAPIError):
+            raise
+        except httpx.RequestError as exc:
+            self._handle_request_error(exc, f"Graph API beta PATCH {endpoint}")
+            return {}

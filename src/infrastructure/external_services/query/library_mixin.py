@@ -1,6 +1,7 @@
 """Mixin providing library and document query handlers for AIDataQueryService."""
 
 import logging
+import re
 from typing import List, Optional
 
 from src.domain.entities import DataQueryResult
@@ -553,12 +554,13 @@ class LibraryQueryMixin:
             answer = f"Found **{len(results)}** result(s) for '{search_query}':\n\n"
             for idx, hit in enumerate(results[:10], 1):
                 resource = hit.get("resource", {})
-                hit_summary = hit.get("summary", "")
+                hit_summary = self._clean_search_snippet(hit.get("summary", ""))
                 resource_name = (
                     resource.get("name")
                     or resource.get("title")
                     or resource.get("webUrl", "Unknown")
                 )
+                resource_name = self._clean_search_snippet(resource_name)
                 resource_type = (
                     resource.get("@odata.type", "").split(".")[-1]
                     if resource.get("@odata.type")
@@ -589,6 +591,37 @@ class LibraryQueryMixin:
                 answer=f"I encountered an error searching SharePoint: {exc}",
                 suggested_actions=["Try again later", "Show me all lists"],
             )
+
+    def _clean_search_snippet(self, text: str) -> str:
+        """Normalize Graph search snippets for user-facing output.
+
+        Graph can return highlight tags like <c0>..</c0> and separators like
+        <ddd/> which are not suitable for end-user display.
+        """
+        if not text:
+            return ""
+
+        cleaned = str(text)
+        # Remove Graph highlight markers and any HTML-like tags.
+        cleaned = re.sub(r"</?c\d+>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<ddd\s*/?>", " … ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+        # De-duplicate repeated sentence fragments often returned by Graph snippets.
+        parts = [p.strip() for p in re.split(r"\s+…\s+", cleaned) if p.strip()]
+        if parts:
+            deduped = []
+            seen = set()
+            for p in parts:
+                key = p.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(p)
+            cleaned = " … ".join(deduped)
+
+        return cleaned
 
     async def search_sharepoint(self, query: str, entity_types=None):
         """Perform a SharePoint-wide search using the SearchService."""

@@ -22,6 +22,9 @@ _LIBRARY_EXPLICIT_PHRASES = (
     "delete library", "remove library",
     "library settings", "enable versioning", "library versioning",
     "add column to library", "library schema", "library structure",
+    "add folder to library", "create folder in library", "add a folder to",
+    "upload file", "add file", "upload document", "add document",
+    "upload to library", "add to library",
 )
 
 _LIBRARY_KEYWORDS = ("library",)

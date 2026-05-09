@@ -208,6 +208,31 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                                     break
                         except Exception:
                             pass
+                    elif _hist_type_lower == "site":
+                        # Resolve site by its last-created name/displayName.
+                        try:
+                            _all_sites = await repository.get_all_sites()
+                            _hist_lower = hist_name.lower()
+                            _hist_compact = _hist_lower.replace(" ", "")
+                            _best_site = None
+                            _best_len = 0
+                            for _st in _all_sites:
+                                _dn = (_st.get("displayName") or "").lower()
+                                _nm = (_st.get("name") or "").lower()
+                                _dn_compact = _dn.replace(" ", "")
+                                _nm_compact = _nm.replace(" ", "")
+                                _exact = _dn == _hist_lower or _nm == _hist_lower or _dn_compact == _hist_compact or _nm_compact == _hist_compact
+                                _partial = (_hist_lower and (_hist_lower in _dn or _hist_lower in _nm))
+                                _score_len = max(len(_dn), len(_nm))
+                                if (_exact or _partial) and _score_len > _best_len:
+                                    _best_site = _st
+                                    _best_len = _score_len
+                            if _best_site:
+                                resource_type = "site"
+                                resource_id = _best_site.get("id")
+                                resource_name = _best_site.get("displayName") or _best_site.get("name") or hist_name
+                        except Exception:
+                            pass
                     elif _hist_type_lower == "library":
                         # Resolve library by name
                         try:

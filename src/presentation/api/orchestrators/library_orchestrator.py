@@ -23,6 +23,28 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
         operation = await LibraryOperationParserService.parse_library_operation(message)
         
         if not operation:
+            _msg_l = (message or "").lower()
+            _looks_like_library_create = (
+                any(w in _msg_l for w in ("library", "libary", "document library"))
+                and any(v in _msg_l for v in ("create", "add", "new", "make"))
+            )
+            if _looks_like_library_create:
+                gathering_service = ServiceContainer.get_gathering_service()
+                _, first_question = gathering_service.start_gathering(
+                    session_id, message, ResourceType.LIBRARY
+                )
+                if first_question:
+                    return ChatResponse(
+                        intent="provision",
+                        reply=f"Sure! Let me help you set that up.\n\n{first_question.question_text}",
+                        requires_input=True,
+                        question_prompt=first_question.question_text,
+                        field_type=first_question.field_type,
+                        field_options=first_question.options,
+                        quick_suggestions=first_question.options[:3] if first_question.options else None,
+                        session_id=session_id,
+                    )
+
             return ChatResponse(
                 intent="chat",
                 reply="I couldn't understand the library operation. Please try rephrasing.\n\n"
@@ -94,6 +116,18 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
         
         # ── CREATE OPERATION ────────────────────────────────
         elif operation.operation == "create":
+
+            # Null out names the AI fabricated rather than the user explicitly provided,
+            # including generic placeholder names that add no value.
+            _GENERIC_NAMES = {
+                "library", "document library", "documents", "document",
+                "files", "my documents", "shared documents", "new library",
+            }
+            if operation.library_name:
+                name_lower = operation.library_name.lower()
+                if name_lower not in message.lower() or name_lower in _GENERIC_NAMES:
+                    operation.library_name = None
+
             if not operation.library_name:
                 gathering_service = ServiceContainer.get_gathering_service()
                 _, first_question = gathering_service.start_gathering(
@@ -145,7 +179,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                         await repository.create_folder(
                             library_id=library_id,
                             folder_name=folder_name,
-                            parent_folder_path=parent,
+                            parent_folder_path=parent if parent != "/" else None,
                             site_id=site_id,
                         )
                         created_folders.append("/".join(segments[: idx + 1]))
@@ -288,12 +322,146 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 reply=f"✅ Column **{operation.column_name}** added to library **{operation.library_name}**!"
             )
         
+        # ── ADD FOLDER TO EXISTING LIBRARY ──────────────────
+        elif operation.operation == "add_folder":
+            if not operation.library_name:
+                return ChatResponse(
+                    intent="chat",
+                    reply="⚠️ Please specify a library name.\n\nExample: 'Add folder Projects to my library'"
+                )
+            
+            if not operation.folder_name and not operation.folder_paths:
+                return ChatResponse(
+                    intent="chat",
+                    reply="⚠️ Please specify which folder to create.\n\nExample: 'Add the HR folder to Documents library'"
+                )
+            
+            # Find the library
+            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            matched_lib = next(
+                (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
+                None
+            )
+            
+            if not matched_lib:
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"❌ Library '{operation.library_name}' not found."
+                )
+            
+            library_id = matched_lib.get('id')
+            lib_name = matched_lib.get('displayName', 'Unknown')
+            created_folders = []
+            failed_folders = []
+            
+            # Determine which folders to create
+            folders_to_create = []
+            if operation.folder_name:
+                folders_to_create = [operation.folder_name]
+            elif operation.folder_paths:
+                folders_to_create = operation.folder_paths
+            
+            # Create each folder
+            for folder_spec in folders_to_create:
+                if not folder_spec or not folder_spec.strip():
+                    continue
+                path = folder_spec.strip().strip("/")
+                segments = [seg.strip() for seg in path.split("/") if seg.strip()]
+                
+                for idx, folder_name in enumerate(segments):
+                    parent = "/".join(segments[:idx]) if idx > 0 else "/"
+                    try:
+                        await repository.create_folder(
+                            library_id=library_id,
+                            folder_name=folder_name,
+                            parent_folder_path=parent if parent != "/" else None,
+                            site_id=_lib_site_id,
+                        )
+                        created_folders.append("/".join(segments[: idx + 1]))
+                    except Exception as folder_err:
+                        logger.warning("Failed to create folder: %s", folder_err)
+                        failed_folders.append("/".join(segments[: idx + 1]))
+                        break
+            
+            if created_folders:
+                folder_list = "\n".join(f"  • {f}" for f in dict.fromkeys(created_folders))
+                reply = f"✅ **{len(created_folders)}** folder(s) created in **{lib_name}**:\n\n{folder_list}"
+            else:
+                reply = f"❌ No folders were created. Please check the folder names and try again."
+            
+            if failed_folders:
+                reply += f"\n\n⚠️ Could not create: {', '.join(failed_folders)}"
+            
+            return ChatResponse(
+                intent="chat",
+                reply=reply,
+                data_summary={"created_folders": created_folders, "library": lib_name}
+            )
+        
+        # ── UPLOAD FILE TO LIBRARY ──────────────────────────
+        elif operation.operation == "upload_file":
+            if not operation.library_name:
+                return ChatResponse(
+                    intent="chat",
+                    reply="⚠️ Please specify a library.\n\nExample: 'Upload a file to my Documents library'"
+                )
+            
+            # Find the library
+            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            matched_lib = next(
+                (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
+                None
+            )
+            
+            if not matched_lib:
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"❌ Library '{operation.library_name}' not found."
+                )
+            
+            library_id = matched_lib.get('id')
+            lib_name = matched_lib.get('displayName', 'Unknown')
+            
+            # Get all folders in the library
+            try:
+                folder_contents = await repository.get_folder_contents(library_id, folder_path="/", site_id=_lib_site_id)
+                folders = [item for item in (folder_contents or []) if item.get('folder')]
+            except Exception as e:
+                logger.debug("Could not fetch folder list: %s", e)
+                folders = []
+            
+            # If there are folders, ask user which one to upload to
+            if folders:
+                folder_names = [f.get('name', 'Unknown') for f in folders if f.get('name')]
+                folder_names = sorted(set(folder_names))  # Remove duplicates and sort
+                
+                options = [f"📁 {fname}" for fname in folder_names]
+                options.append("📄 Add to the root")
+                
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"📁 **{lib_name}** has {len(folders)} folder(s).\n\nWhich folder should I upload the file to?\n\nAvailable options:",
+                    field_type="choice",
+                    field_options=options,
+                    quick_suggestions=options[:5],
+                    requires_input=True,
+                    session_id=session_id,
+                    data_summary={"library": lib_name, "folder_count": len(folders), "folders": folder_names}
+                )
+            else:
+                # No folders, proceed with upload to root
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"📁 **{lib_name}** is ready for the file upload.\n\nI can help you upload it to the root folder. Please provide the file or let me know if you need help.",
+                    data_summary={"library": lib_name, "upload_location": "root"}
+                )
+        
         # ── UNSUPPORTED OPERATION ───────────────────────────
         else:
             return ChatResponse(
                 intent="chat",
                 reply=f"⚠️ Operation '{operation.operation}' is not yet fully implemented.\n\n"
-                       f"Supported operations: create, list, get, delete, get_schema, add_column"
+                       f"Supported operations: create, list, get, delete, get_schema, add_column, add_folder, upload_file"
             )
     
     except Exception as e:

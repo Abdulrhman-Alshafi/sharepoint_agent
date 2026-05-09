@@ -2,7 +2,7 @@
 
 import logging
 from typing import Optional, Literal, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from src.infrastructure.external_services.ai_client_factory import get_instructor_client
 
 logger = logging.getLogger(__name__)
@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class LibraryOperation(BaseModel):
     """Structured representation of a library operation."""
-    operation: Literal["create", "get", "list", "delete", "add_column", "get_schema", "update_settings"] = Field(
-        description="Type of operation: create, get, list, delete, add_column, get_schema, update_settings"
+    operation: Literal["create", "get", "list", "delete", "add_column", "get_schema", "update_settings", "add_folder", "upload_file"] = Field(
+        description="Type of operation: create, get, list, delete, add_column, get_schema, update_settings, add_folder, upload_file"
     )
     library_name: Optional[str] = Field(
         default=None,
@@ -45,6 +45,43 @@ class LibraryOperation(BaseModel):
         default=None,
         description="Optional folder paths to create in the library. Supports nested paths with '/'."
     )
+    folder_name: Optional[str] = Field(
+        default=None,
+        description="Name of a folder to create or operate on"
+    )
+    file_path: Optional[str] = Field(
+        default=None,
+        description="Path to file being uploaded"
+    )
+    target_folder: Optional[str] = Field(
+        default=None,
+        description="Target folder path for file upload (if not root)"
+    )
+
+    @field_validator("column_type", mode="before")
+    @classmethod
+    def normalize_column_type(cls, value: Any) -> Any:
+        """Convert empty strings to None; normalize type aliases."""
+        if not value or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            # Map common aliases
+            aliases = {
+                "text": "text",
+                "string": "text",
+                "singleline": "text",
+                "number": "number",
+                "int": "number",
+                "integer": "number",
+                "date": "date",
+                "datetime": "date",
+                "choice": "choice",
+                "boolean": "boolean",
+                "bool": "boolean",
+            }
+            return aliases.get(normalized, normalized)
+        return value
 
 
 class LibraryOperationParserService:
@@ -61,6 +98,8 @@ class LibraryOperationParserService:
         "- 'add_column': Adding a column to a library\n"
         "- 'get_schema': Getting the structure/schema of a library\n"
         "- 'update_settings': Updating library settings (versioning, etc.)\n\n"
+                "- 'add_folder': Adding a folder to an existing library\n"
+                "- 'upload_file': Uploading a file to a library (may prompt for folder selection)\n\n"
         "Extract:\n"
         "1. The operation type\n"
         "2. The library name\n"
@@ -84,7 +123,13 @@ class LibraryOperationParserService:
         "- 'Enable versioning on the Documents library'\n"
         "  → operation='update_settings', library_name='Documents', enable_versioning=True\n"
         "- 'Delete the old archives library'\n"
-        "  → operation='delete', library_name='old archives'\n"
+                    "  → operation='delete', library_name='old archives'\n"
+                "- 'Add the HR folder to the Documents library'\n"
+                    "  → operation='add_folder', library_name='Documents', folder_name='HR'\n"
+                "- 'I want to add the folder Projects/2026 to the Team Files library'\n"
+                    "  → operation='add_folder', library_name='Team Files', folder_paths=['Projects/2026']\n"
+                "- 'Upload a file to my Documents library'\n"
+                    "  → operation='upload_file', library_name='Documents'\n"
     )
 
     @staticmethod

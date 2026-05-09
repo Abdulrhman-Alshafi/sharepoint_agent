@@ -1,5 +1,57 @@
 """Utility for building provisioning prompts from specifications."""
 
+import re
+
+
+def _normalize_folder_paths(value) -> list[str]:
+    """Normalize folder paths from string/list input into unique clean paths.
+
+    Harmonizes simple singular/plural root variants so mixed inputs like
+    "project, project/2026, projects/2026/Q2" resolve to one hierarchy.
+    """
+    if not value:
+        return []
+
+    if isinstance(value, list):
+        raw_parts = value
+    else:
+        raw_parts = re.split(r"[\n,;]+", str(value))
+
+    root_alias: dict[str, str] = {}
+    seen = set()
+    paths: list[str] = []
+    for part in raw_parts:
+        p = str(part).strip().strip("/")
+        if not p:
+            continue
+        if p.lower() in {"none", "skip", "skip folders", "n/a"}:
+            continue
+
+        segs = [seg.strip() for seg in p.split("/") if seg.strip()]
+        if not segs:
+            continue
+
+        root = segs[0]
+        root_l = root.lower()
+        singular = root_l[:-1] if root_l.endswith("s") else root_l
+        plural = singular + "s"
+
+        canonical_root = root_alias.get(root_l) or root_alias.get(singular) or root_alias.get(plural)
+        if not canonical_root:
+            canonical_root = root
+            root_alias[root_l] = canonical_root
+            root_alias[singular] = canonical_root
+            root_alias[plural] = canonical_root
+
+        segs[0] = canonical_root
+        normalized_path = "/".join(segs)
+
+        if normalized_path in seen:
+            continue
+        seen.add(normalized_path)
+        paths.append(normalized_path)
+    return paths
+
 
 def build_provisioning_prompt_from_spec(spec) -> str:
     """Convert a ResourceSpecification to a provisioning prompt.
@@ -21,7 +73,6 @@ def build_provisioning_prompt_from_spec(spec) -> str:
         description = fields.get("description", "")
         template = fields.get("template", "Team site (sts)")
         owner_email = fields.get("owner_email", "")
-        site_content = fields.get("site_content", "You choose the best setup")
         
         prompt = f"I need you to CREATE A BRAND NEW SharePoint site. The site title is '{title}'."
         if description:
@@ -34,28 +85,8 @@ def build_provisioning_prompt_from_spec(spec) -> str:
             
         if owner_email:
             prompt += f" Set the owner email to '{owner_email}'."
-        
-        # Handle site content / child resources
-        site_content_lower = site_content.lower().strip() if site_content else ""
-        _ai_decides = any(phrase in site_content_lower for phrase in [
-            "you choose", "you decide", "best setup", "you pick", "ai decide",
-            "auto", "recommend", "suggest",
-        ])
-        _no_extras = any(phrase in site_content_lower for phrase in [
-            "just the site", "no extras", "none", "nothing", "only the site",
-        ])
-        
-        if _no_extras:
-            prompt += " Do NOT create any additional pages, lists, or libraries — only the site itself."
-        elif _ai_decides:
-            prompt += (
-                f" Also create the best pages, lists, and document libraries for a '{title}' site."
-                f" Include a welcoming Home page with a hero banner, quick links, and relevant content."
-                f" Add any lists and document libraries that would be useful for this site's purpose."
-            )
-        else:
-            prompt += f" The site should include these resources: {site_content}."
-            
+        prompt += " Do NOT create any additional pages, lists, or libraries — only the site itself."
+
         return prompt
         
     elif resource_type == ResourceType.LIST:
@@ -134,6 +165,7 @@ def build_provisioning_prompt_from_spec(spec) -> str:
     elif resource_type == ResourceType.LIBRARY:
         title = fields.get("title", "Untitled Library")
         description = fields.get("description", "")
+        folder_paths = _normalize_folder_paths(fields.get("folder_paths", ""))
         
         prompt = f"I need you to CREATE A BRAND NEW SharePoint document library. The library name is '{title}'."
         if description:
@@ -143,12 +175,23 @@ def build_provisioning_prompt_from_spec(spec) -> str:
         if fields.get("enable_versioning"):
             prompt += " Enable versioning."
         
-        # Add permission info
-        needs_permissions = fields.get("needs_permissions", "")
-        if needs_permissions and "no" in str(needs_permissions).lower():
-            prompt += " No special permissions needed - default access for everyone."
-        elif fields.get("permission_groups"):
-            prompt += f" Permission groups: {fields.get('permission_groups')}."
+        # Add folders to seed_data if specified
+        if folder_paths:
+            folder_paths_text = ", ".join(folder_paths)
+            prompt += (
+                f"\n\nIMPORTANT: The user wants these folders created in the library:\n{folder_paths_text}\n"
+                "You MUST include these folders in the seed_data array with type='folder_path'. "
+                "For example, if user wants 'HR' and 'Finance' folders, create seed_data like:\n"
+                '  [\n'
+                '    {"type": "folder_path", "name": "HR"},\n'
+                '    {"type": "folder_path", "name": "Finance"}\n'
+                '  ]\n'
+                "For nested paths like 'Projects/2026/Q1', create:\n"
+                '  {"type": "folder_path", "name": "Projects/2026/Q1"}\n'
+                "Handle nested paths by using '/' as the path separator. "
+                "IMPORTANT: parent folders are implicit and must be created automatically "
+                "(e.g., Projects/2026/Q1 requires Projects and Projects/2026 to exist)."
+            )
         
         prompt += " IMPORTANT: This is a CREATE operation for a new document library. Set action to CREATE."
         

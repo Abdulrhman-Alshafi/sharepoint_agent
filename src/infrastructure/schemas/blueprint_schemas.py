@@ -1,6 +1,6 @@
 """Schemas for blueprint generation from AI."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional, List, Dict, Any
 from src.domain.entities import ActionType
 
@@ -11,14 +11,64 @@ class SPColumnModel(BaseModel):
         "managed_metadata", "boolean", "personOrGroup", "currency",
         "hyperlinkOrPicture", "geolocation"
     ]
-    required: bool
+    required: bool = False
     choices: List[str] = []
     lookup_list: Optional[str] = None
     term_set_id: Optional[str] = None
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_type(cls, value: Any) -> Any:
+        """Normalize common LLM aliases to supported SharePoint column types."""
+        if not isinstance(value, str):
+            return value
+
+        raw = value.strip()
+        key = raw.lower().replace(" ", "").replace("_", "").replace("-", "")
+
+        aliases = {
+            "text": "text",
+            "string": "text",
+            "singleline": "text",
+            "singlelinetext": "text",
+            "note": "note",
+            "multiline": "note",
+            "multilinetext": "note",
+            "textarea": "note",
+            "number": "number",
+            "int": "number",
+            "integer": "number",
+            "float": "number",
+            "decimal": "number",
+            "date": "dateTime",
+            "datetime": "dateTime",
+            "dateandtime": "dateTime",
+            "choice": "choice",
+            "lookup": "lookup",
+            "managedmetadata": "managed_metadata",
+            "taxonomy": "managed_metadata",
+            "termset": "managed_metadata",
+            "boolean": "boolean",
+            "bool": "boolean",
+            "yesno": "boolean",
+            "person": "personOrGroup",
+            "people": "personOrGroup",
+            "user": "personOrGroup",
+            "personorgroup": "personOrGroup",
+            "currency": "currency",
+            "url": "hyperlinkOrPicture",
+            "link": "hyperlinkOrPicture",
+            "hyperlink": "hyperlinkOrPicture",
+            "picture": "hyperlinkOrPicture",
+            "hyperlinkorpicture": "hyperlinkOrPicture",
+            "geolocation": "geolocation",
+        }
+
+        return aliases.get(key, raw)
+
 class SPListModel(BaseModel):
     title: str
-    description: str
+    description: str = ""
     columns: List[SPColumnModel]  # Required - no default, AI must provide columns
     content_types: List[str] = []
     seed_data: List[Dict[str, Any]] = []

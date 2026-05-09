@@ -15,8 +15,9 @@ Layers:
   4 — File extension / "file" token → ``None`` (route to file handler)
   5 — Explicit resource word        → ``"delete"`` at WEIGHT_EXPLICIT
   6 — Field-filter patterns         → ``"item_operation"`` at WEIGHT_CONTEXTUAL
-  7 — Confirmation / pronoun        → ``"delete"`` at WEIGHT_KEYWORD
-  8 — Default                       → ``"delete"`` at WEIGHT_CONTEXTUAL
+  7 — Confirmation ("yes, delete X") → ``"delete"`` at WEIGHT_KEYWORD
+      Pronoun ("delete it/this")     → ``"item_operation"`` at WEIGHT_KEYWORD
+  8 — Default (no resource keyword)  → ``"item_operation"`` at WEIGHT_CONTEXTUAL
 """
 
 from __future__ import annotations
@@ -130,19 +131,25 @@ def detect_delete_intent(text: str) -> DetectionResult:
             layer_hit = "field_filter"
             matched = l6_matched
 
-    # ── Layer 7: confirmation or pronoun → delete ─────────────────────────
+    # ── Layer 7: confirmation or pronoun ──────────────────────────────────
     if not scores:
         is_confirm = "yes," in text_lower or text_lower.startswith("yes ")
         has_pronoun = bool(tokens & _PRONOUN_REF)
-        if is_confirm or has_pronoun:
+        if is_confirm:
+            # Explicit confirmation ("yes, delete X") — keep as resource-delete
             scores["delete"] = WEIGHT_KEYWORD
-            layer_hit = "confirm_or_pronoun"
+            layer_hit = "confirm"
+            matched = gate_matched
+        elif has_pronoun:
+            # "delete it/this/that" — almost always referring to an item
+            scores["item_operation"] = WEIGHT_KEYWORD
+            layer_hit = "pronoun_item"
             matched = gate_matched
 
-    # ── Layer 8: default ─────────────────────────────────────────────────
+    # ── Layer 8: default — no resource word present → treat as item delete ─
     if not scores:
-        scores["delete"] = WEIGHT_CONTEXTUAL
-        layer_hit = "default_delete"
+        scores["item_operation"] = WEIGHT_CONTEXTUAL
+        layer_hit = "default_item"
         matched = gate_matched
 
     selected = max(scores, key=scores.get) if scores else None

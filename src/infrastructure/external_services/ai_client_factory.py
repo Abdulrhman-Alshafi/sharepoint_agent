@@ -3,6 +3,11 @@ from typing import Tuple, Any, Optional
 import os
 import json
 from pydantic import BaseModel
+from pydantic_core import PydanticUndefinedType
+try:
+    from pydantic.fields import PydanticUndefined
+except ImportError:
+    from pydantic.fields import Undefined as PydanticUndefined  # pydantic v1 fallback
 
 from src.infrastructure.config import settings
 
@@ -31,13 +36,47 @@ class GenAICompletions:
         
         prompt = "\n".join(prompt_parts)
         
-        # Add schema instruction — be very explicit so the model doesn't return plain text.
-        schema = response_model.model_json_schema()
+        # Build a concrete example object from the model's field types.
+        # Showing an example instance (not the JSON Schema) prevents Gemini from
+        # echoing back the schema structure itself as its response.
+        import typing as _typing
+        example_obj: dict = {}
+        for field_name, field_info in response_model.model_fields.items():
+            ann = field_info.annotation
+            # Unwrap Optional[X] → X so we can inspect the inner type
+            origin = getattr(ann, "__origin__", None)
+            args = getattr(ann, "__args__", ())
+            inner = ann
+            if origin is _typing.Union and args:
+                # Optional[X] == Union[X, None]; take the first non-None arg
+                non_none = [a for a in args if a is not type(None)]
+                if non_none:
+                    inner = non_none[0]
+            inner_origin = getattr(inner, "__origin__", None)
+            # If a default value is provided, use it as the example
+            if field_info.default is not None and field_info.default is not PydanticUndefined:
+                example_obj[field_name] = field_info.default
+            elif field_info.default_factory is not None:  # type: ignore[attr-defined]
+                example_obj[field_name] = field_info.default_factory()  # type: ignore[misc]
+            elif inner_origin is list or inner is list:
+                example_obj[field_name] = ["example value 1", "example value 2"]
+            elif inner is str:
+                example_obj[field_name] = "your answer here"
+            elif inner is bool:
+                example_obj[field_name] = False
+            elif inner is int or inner is float:
+                example_obj[field_name] = 0
+            elif inner_origin is dict or inner is dict:
+                example_obj[field_name] = {}
+            else:
+                example_obj[field_name] = ""
+
         full_prompt = (
             f"{prompt}\n\n"
             f"IMPORTANT: You MUST respond with ONLY a valid JSON object — no markdown, no prose, "
-            f"no code fences, no explanation. The JSON must match this schema exactly:\n"
-            f"{json.dumps(schema, indent=2)}\n\n"
+            f"no code fences, no explanation.\n"
+            f"The JSON must contain exactly these fields (fill them with real values):\n"
+            f"{json.dumps(example_obj, indent=2)}\n\n"
             f"Output only the raw JSON object starting with '{{' and ending with '}}'."
         )
         
@@ -80,7 +119,7 @@ class GenAICompletions:
                 for field_name, field_info in fields.items():
                     if field_name == primary_field:
                         fallback[field_name] = response_text
-                    elif field_info.default is not None:
+                    elif field_info.default is not None and field_info.default is not PydanticUndefined:
                         fallback[field_name] = field_info.default
                     elif field_info.default_factory is not None:  # type: ignore[attr-defined]
                         fallback[field_name] = field_info.default_factory()  # type: ignore[misc]
@@ -146,6 +185,46 @@ def get_instructor_client() -> Tuple[Any, Optional[str]]:
         return _cached_instructor_client
     _cached_instructor_client = _build_instructor_client()
     return _cached_instructor_client
+
+
+def generate_text(prompt: str) -> str:
+    """Generate raw text from a prompt using the configured AI provider.
+
+    Used for free-form JSON generation where instructor's strict schema conversion
+    (GENAI_TOOLS mode) would fail on open-ended types like Dict[str, Any].
+    """
+    from src.infrastructure.config import settings as _s
+
+    if _s.AI_PROVIDER.lower() == "gemini":
+        from google import genai as _genai
+        _client = _genai.Client(api_key=_s.GEMINI_API_KEY)
+        response = _client.models.generate_content(
+            model=_s.GEMINI_MODEL,
+            contents=prompt,
+        )
+        return response.text or ""
+
+    if _s.AI_PROVIDER.lower() == "vertexai":
+        # Reuse the cached wrapper which already has generate_content
+        wrapper, _ = get_instructor_client()
+        response = wrapper.generate_content(prompt)
+        return response.text or ""
+
+    # OpenAI-compatible provider
+    from openai import OpenAI as _OpenAI
+    _args: dict = {}
+    if _s.OPENAI_API_KEY:
+        _args["api_key"] = _s.OPENAI_API_KEY
+    else:
+        _args["api_key"] = "dummy_key_for_local"
+    if _s.OPENAI_BASE_URL:
+        _args["base_url"] = _s.OPENAI_BASE_URL
+    _oa = _OpenAI(**_args)
+    resp = _oa.chat.completions.create(
+        model=_s.OPENAI_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.choices[0].message.content or ""
 
 
 def _build_instructor_client() -> Tuple[Any, Optional[str]]:

@@ -33,12 +33,17 @@ from src.presentation.api.orchestrators.delete_orchestrator import handle_delete
 # Specific handling flows
 from src.presentation.api.utils.message_resolver import resolve_followup_message
 from src.domain.entities.conversation import GatheringPhase, ResourceType
+from src.application.services.question_templates import QuestionTemplates
 
 logger = logging.getLogger(__name__)
 
 
 def _normalize_folder_paths(value: Any) -> list:
-    """Normalize folder-path answers into a clean list of unique relative paths."""
+    """Normalize folder-path answers into unique relative paths.
+
+    Also harmonizes trivial singular/plural root variants so mixed inputs like
+    "project, project/2026, projects/2026/Q2" end up in one tree.
+    """
     if not value:
         return []
     if isinstance(value, list):
@@ -46,14 +51,76 @@ def _normalize_folder_paths(value: Any) -> list:
     else:
         raw_parts = re.split(r"[\n,;]+", str(value))
 
+    # Root canonicalisation map (e.g., projects -> project when project already seen).
+    root_alias: Dict[str, str] = {}
+
     seen = set()
     result = []
     for part in raw_parts:
         p = str(part).strip().lstrip("-*").strip().strip("/")
-        if p and p.lower() not in {"none", "skip", "skip folders", "n/a"} and p not in seen:
-            seen.add(p)
-            result.append(p)
+        if not p or p.lower() in {"none", "skip", "skip folders", "n/a"}:
+            continue
+
+        segs = [seg.strip() for seg in p.split("/") if seg.strip()]
+        if not segs:
+            continue
+
+        root = segs[0]
+        root_l = root.lower()
+        singular = root_l[:-1] if root_l.endswith("s") else root_l
+        plural = singular + "s"
+
+        canonical_root = root_alias.get(root_l) or root_alias.get(singular) or root_alias.get(plural)
+        if not canonical_root:
+            canonical_root = root
+            root_alias[root_l] = canonical_root
+            root_alias[singular] = canonical_root
+            root_alias[plural] = canonical_root
+
+        segs[0] = canonical_root
+        normalized_path = "/".join(segs)
+
+        if normalized_path not in seen:
+            seen.add(normalized_path)
+            result.append(normalized_path)
     return result
+
+
+def _is_nonfatal_folder_exists_error(exc: Exception) -> bool:
+    """Return True when folder creation failed only because the folder already exists."""
+    msg = str(exc).lower()
+    indicators = (
+        "already exists",
+        "namealreadyexists",
+        "resourcealreadyexists",
+        "item with the same name",
+        "conflict",
+    )
+    return any(token in msg for token in indicators)
+
+
+def _is_personal_scope_query(message: str, enhanced_intent: Optional[str]) -> bool:
+    """Detect queries that should be scoped to the authenticated user identity."""
+    if enhanced_intent == "personal_query":
+        return True
+
+    msg = (message or "").strip().lower()
+    personal_patterns = (
+        r"\bmy\b",
+        r"\bmine\b",
+        r"assigned to me",
+        r"for me",
+        r"\bi gave\b",
+        r"\bi created\b",
+        r"\bi submitted\b",
+        r"\bi reported\b",
+        r"\bdid i\b",
+        r"\bwhat have i\b",
+        r"\bi have received\b",
+        r"\bi received\b",
+        r"received by me",
+    )
+    return any(re.search(pattern, msg) for pattern in personal_patterns)
 
 _CHAT_SYSTEM_PROMPT = (
     "You are a helpful and professional SharePoint AI Assistant. "
@@ -81,6 +148,34 @@ _CHAT_SYSTEM_PROMPT = (
 
 class _ChatReplyModel(BaseModel):
     reply: str
+
+
+def _build_user_query_service(raw_token: Optional[str], site_id: str):
+    """Build a per-request user-scoped DataQueryApplicationService when a bearer token is available.
+
+    Returns None if raw_token is absent so callers fall back to the singleton.
+    """
+    if not raw_token:
+        return None
+    from src.application.services import DataQueryApplicationService
+    from src.infrastructure.external_services.ai_data_query_service import AIDataQueryService
+    from src.infrastructure.services.smart_resource_discovery import SmartResourceDiscoveryService
+
+    user_repo = get_repository(user_token=raw_token, site_id=site_id)
+    graph_client = getattr(user_repo, "graph_client", None)
+    ai_client, ai_model = ServiceContainer.get_ai_client()
+    smart_discovery = SmartResourceDiscoveryService(
+        sharepoint_repository=user_repo,
+        ai_client=ai_client,
+        ai_model=ai_model,
+    )
+    inner = AIDataQueryService(
+        user_repo, graph_client, site_id,
+        smart_discovery_service=smart_discovery,
+        ai_client=ai_client,
+        ai_model=ai_model,
+    )
+    return DataQueryApplicationService(inner)
 
 
 class ChatOrchestrator:
@@ -124,7 +219,6 @@ class ChatOrchestrator:
                     session_id=session_id,
                 )
             if is_confirmation(message):
-                from src.presentation.api import get_repository
                 from src.application.use_cases.update_resource_use_case import UpdateResourceUseCase
 
                 _ctx = _pending_state.context_memory
@@ -239,12 +333,8 @@ class ChatOrchestrator:
                 
                 # Re-run query logic (simplified for orchestrator)
                 try:
-                    qsvc = data_query_service
-                    if raw_token:
-                        # Construct a user-scoped service here if needed,
-                        # but for brevity we reuse the provided one and pass site_ids
-                        pass 
-                    
+                    qsvc = _build_user_query_service(raw_token, clar_site_id or site_id) or data_query_service
+
                     clar_result = await qsvc.query_data(
                         orig_q,
                         site_ids=[clar_site_id] if clar_site_id else site_ids,
@@ -415,13 +505,20 @@ class ChatOrchestrator:
         if main_intent == "query":
             # Simplified query routing logic
             try:
-                # Add personal identity if needed
                 query_message = resolved_message
-                
-                # ... (Personal identity enrichment logic) ...
-                
-                # Execute query
-                result_dto = await data_query_service.query_data(query_message, site_ids=site_ids, user_login_name=user_login_name, **page_ctx)
+
+                # Enrich personal-scope queries with the authenticated user context.
+                # The query service expects this tag for accurate personal filtering.
+                if _is_personal_scope_query(query_message, enhanced_intent):
+                    _identity_email = (user_login_name or user_email or "").strip()
+                    if _identity_email and not query_message.startswith("[Current user:"):
+                        _name_part = _identity_email.split("@")[0].replace(".", " ").replace("_", " ").strip()
+                        _display_name = _name_part.title() if _name_part else _identity_email
+                        query_message = f"[Current user: {_display_name} (email: {_identity_email})] {query_message}"
+
+                # Execute query using a user-scoped service when a token is available
+                _eff_query_svc = _build_user_query_service(raw_token, site_id) or data_query_service
+                result_dto = await _eff_query_svc.query_data(query_message, site_ids=site_ids, user_login_name=user_login_name, **page_ctx)
                 
                 # Handle clarification
                 if getattr(result_dto, "clarification_candidates", None):
@@ -468,32 +565,42 @@ class ChatOrchestrator:
             try:
                 # Check if we're continuing an active gathering session
                 if in_active_gathering and active_gathering:
-                    state, next_question, is_complete = gathering_service.process_answer(
-                        session_id, resolved_message
-                    )
+                    try:
+                        state, next_question, is_complete = gathering_service.process_answer(
+                            session_id, resolved_message
+                        )
+                    except ValueError as validation_err:
+                        # Keep user on the same question and explain why the answer is invalid.
+                        current_state = gathering_service.conversation_repo.get(session_id)
+                        if current_state:
+                            current_spec = current_state.get_current_spec()
+                            if current_spec:
+                                current_questions = QuestionTemplates.get_questions(current_spec.resource_type)
+                                if 0 <= current_state.current_question_index < len(current_questions):
+                                    current_question = current_questions[current_state.current_question_index]
+                                    return ChatResponse(
+                                        intent="provision",
+                                        reply=f"⚠️ {validation_err}\n\n{current_question.question_text}",
+                                        requires_input=True,
+                                        question_prompt=current_question.question_text,
+                                        field_type=current_question.field_type,
+                                        field_options=current_question.options,
+                                        quick_suggestions=current_question.options[:3] if current_question.options else None,
+                                        session_id=session_id,
+                                    )
+                        return ChatResponse(
+                            intent="provision",
+                            reply=f"⚠️ {validation_err}",
+                            session_id=session_id,
+                        )
 
                     if is_complete:
                         # All questions answered → build prompt from collected fields and provision
                         spec = state.get_current_spec()
                         collected = spec.collected_fields if spec else {}
-                        resource_label = spec.resource_type.value if spec else "resource"
+                        from src.presentation.api.utils.prompt_builder import build_provisioning_prompt_from_spec
 
-                        # Build a rich provisioning prompt from gathered fields
-                        prompt_parts = [f"Create a {resource_label}"]
-                        if collected.get("title"):
-                            prompt_parts.append(f"called '{collected['title']}'")
-                        if collected.get("description"):
-                            prompt_parts.append(f"for {collected['description']}")
-                        if collected.get("columns") and collected["columns"] != "AI_GENERATED":
-                            prompt_parts.append(f"with columns: {collected['columns']}")
-                        elif collected.get("columns") == "AI_GENERATED":
-                            prompt_parts.append("with AI-generated columns")
-                        if collected.get("template"):
-                            prompt_parts.append(f"using template: {collected['template']}")
-                        if collected.get("add_sample_data") and collected["add_sample_data"] not in (False, "No, I'll add data myself"):
-                            prompt_parts.append("and add sample data")
-
-                        provision_prompt = " ".join(prompt_parts)
+                        provision_prompt = build_provisioning_prompt_from_spec(spec) if spec else "Create a resource"
                         logger.info("Gathering complete — provisioning with prompt: %s", provision_prompt)
 
                         # Mark gathering as complete
@@ -503,28 +610,32 @@ class ChatOrchestrator:
                         resolved_target_site_id = site_id
                         if collected.get("target_site") and collected["target_site"].strip():
                             target_site_name = collected["target_site"].strip()
-                            try:
-                                # Try to resolve the site name to a site ID
-                                repo = get_repository(user_token=raw_token)
-                                all_sites = await repo.get_all_sites()
-                                matched_site = None
-                                # Exact match first
-                                for s in all_sites:
-                                    if s.get("displayName", "").lower() == target_site_name.lower() or s.get("name", "").lower() == target_site_name.lower():
-                                        matched_site = s
-                                        break
-                                # Partial match if no exact match
-                                if not matched_site:
+                            normalized_target_site = target_site_name.lower()
+                            if target_site_name == "CURRENT_SITE" or normalized_target_site in {"current site", "use current site", "this site", "same site", "here"}:
+                                resolved_target_site_id = site_id
+                            else:
+                                try:
+                                    # Try to resolve the site name to a site ID
+                                    repo = get_repository(user_token=raw_token)
+                                    all_sites = await repo.get_all_sites()
+                                    matched_site = None
+                                    # Exact match first
                                     for s in all_sites:
-                                        if target_site_name.lower() in s.get("displayName", "").lower() or target_site_name.lower() in s.get("name", "").lower():
+                                        if s.get("displayName", "").lower() == normalized_target_site or s.get("name", "").lower() == normalized_target_site:
                                             matched_site = s
                                             break
-                                if matched_site:
-                                    resolved_target_site_id = matched_site.get("id") or site_id
-                                    logger.info("Resolved target_site '%s' to site ID: %s", target_site_name, resolved_target_site_id)
-                            except Exception as site_resolve_err:
-                                logger.warning("Failed to resolve target_site '%s': %s", target_site_name, site_resolve_err)
-                                resolved_target_site_id = site_id
+                                    # Partial match if no exact match
+                                    if not matched_site:
+                                        for s in all_sites:
+                                            if normalized_target_site in s.get("displayName", "").lower() or normalized_target_site in s.get("name", "").lower():
+                                                matched_site = s
+                                                break
+                                    if matched_site:
+                                        resolved_target_site_id = matched_site.get("id") or site_id
+                                        logger.info("Resolved target_site '%s' to site ID: %s", target_site_name, resolved_target_site_id)
+                                except Exception as site_resolve_err:
+                                    logger.warning("Failed to resolve target_site '%s': %s", target_site_name, site_resolve_err)
+                                    resolved_target_site_id = site_id
 
                         result_dto = await provisioning_service.provision_resources(
                             provision_prompt,
@@ -555,9 +666,18 @@ class ChatOrchestrator:
                                             if full_path in created:
                                                 continue
                                             try:
-                                                await repo.create_folder(lib_id, folder_name, parent, site_id=resolved_target_site_id)
+                                                await repo.create_folder(
+                                                    lib_id,
+                                                    folder_name,
+                                                    parent if parent != "/" else None,
+                                                    site_id=resolved_target_site_id,
+                                                )
                                                 created.append(full_path)
-                                            except Exception:
+                                            except Exception as folder_err:
+                                                if _is_nonfatal_folder_exists_error(folder_err):
+                                                    # Already created during blueprint provisioning; treat as success.
+                                                    created.append(full_path)
+                                                    continue
                                                 failed.append(full_path)
                                                 break
                                     if created:
@@ -650,9 +770,18 @@ class ChatOrchestrator:
                                             if full_path in created:
                                                 continue
                                             try:
-                                                await repo.create_folder(lib_id, folder_name, parent, site_id=resolved_target_site_id)
+                                                await repo.create_folder(
+                                                    lib_id,
+                                                    folder_name,
+                                                    parent if parent != "/" else None,
+                                                    site_id=resolved_target_site_id,
+                                                )
                                                 created.append(full_path)
-                                            except Exception:
+                                            except Exception as folder_err:
+                                                if _is_nonfatal_folder_exists_error(folder_err):
+                                                    # Already created during blueprint provisioning; treat as success.
+                                                    created.append(full_path)
+                                                    continue
                                                 failed.append(full_path)
                                                 break
                                     if created:
@@ -681,6 +810,30 @@ class ChatOrchestrator:
                     )
 
                 # Could not detect resource type — fall back to direct provisioning
+                # Guardrail: vague create-library requests must enter question flow,
+                # not direct provisioning with AI-invented defaults.
+                _msg_l = (resolved_message or "").lower()
+                _vague_library_create = (
+                    any(tok in _msg_l for tok in ("library", "libary", "document library"))
+                    and any(tok in _msg_l for tok in ("create", "add", "new", "make"))
+                    and not any(tok in _msg_l for tok in ("called", "named", "name is", "titled", "with name"))
+                )
+                if _vague_library_create:
+                    state, first_question = gathering_service.start_gathering(
+                        session_id, resolved_message, ResourceType.LIBRARY
+                    )
+                    if first_question is not None:
+                        return ChatResponse(
+                            intent="provision",
+                            reply=f"Sure! Let me help you set that up.\n\n{first_question.question_text}",
+                            requires_input=True,
+                            question_prompt=first_question.question_text,
+                            field_type=first_question.field_type,
+                            field_options=first_question.options,
+                            quick_suggestions=first_question.options[:3] if first_question.options else None,
+                            session_id=session_id,
+                        )
+
                 # Try to extract and resolve target_site from message if provided
                 fallback_resolved_site_id = site_id
                 try:
@@ -741,10 +894,10 @@ class ChatOrchestrator:
                 _chat_result = client.chat.completions.create(**_kwargs)
                 return ChatResponse(intent="chat", reply=_chat_result.reply, session_id=session_id)
             except Exception as _chat_err:
-                logger.warning("Chat response generation failed: %s", _chat_err)
+                logger.error("Chat response generation failed: %s", _chat_err, exc_info=True)
                 return ChatResponse(
                     intent="chat",
-                    reply="Hi! I'm your SharePoint AI assistant. How can I help you today?",
+                    reply=f"I'm sorry, I encountered an error while processing your message: {_chat_err}",
                     session_id=session_id,
                 )
 

@@ -1,5 +1,6 @@
 """Handler for SharePoint list item operations (CRUD, attachments, views)."""
 
+import asyncio
 from typing import List, Dict, Any, Optional
 from src.presentation.api.schemas.chat_schemas import ChatResponse
 from src.presentation.api.orchestrators.orchestrator_utils import get_logger, error_response
@@ -167,8 +168,9 @@ async def _generate_sample_items(
     repository: Any = None,
 ) -> List[Dict[str, Any]]:
     """Use AI to generate realistic sample items for a given list schema."""
-    from pydantic import BaseModel
-    from src.infrastructure.external_services.ai_client_factory import get_instructor_client
+    import json as _json
+    import re as _re
+    from src.infrastructure.external_services.ai_client_factory import generate_text
 
     # Build a column description string
     _skip = {"id", "created", "modified", "author", "editor", "_uitype", "attachments", "contenttypeid"}
@@ -202,9 +204,6 @@ async def _generate_sample_items(
         except Exception:
             pass  # Non-fatal
 
-    class _SampleItems(BaseModel):
-        items: List[Dict[str, Any]]
-
     prompt = (
         f"Generate exactly {quantity} realistic sample item(s) for a SharePoint list called '{list_name}'.\n\n"
         f"List columns:\n{schema_text}\n\n"
@@ -222,27 +221,34 @@ async def _generate_sample_items(
             f"IMPORTANT: For any personOrGroup column, use ONLY emails from the real users above. "
             f"Do NOT invent user names or emails.\n"
         )
-    prompt += f"\nReturn a JSON object with key 'items' containing a list of {quantity} item dict(s)."
+    prompt += (
+        f"\nRespond with ONLY a valid JSON object — no markdown, no code fences, no explanation.\n"
+        f"Format: {{\"items\": [ {{...}}, {{...}} ]}}\n"
+        f"Output exactly {quantity} item object(s) inside the 'items' array."
+    )
 
     try:
-        client, model = get_instructor_client()
-        kwargs = {
-            "messages": [{"role": "user", "content": prompt}],
-            "response_model": _SampleItems,
-            "temperature": 0.8,
-        }
-        if model:
-            kwargs["model"] = model
-        import inspect
-        result = client.chat.completions.create(**kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        # fall through to the clean-fields return below
+        raw = await asyncio.get_running_loop().run_in_executor(None, generate_text, prompt)
+        raw = raw.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```json"):
+            raw = raw.split("```json", 1)[1].split("```")[0].strip()
+        elif raw.startswith("```"):
+            raw = raw.split("```", 1)[1].split("```")[0].strip()
+        # Extract first {...} block if needed
+        if not raw.startswith("{"):
+            m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            if m:
+                raw = m.group(0).strip()
+        data = _json.loads(raw)
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            raise ValueError(f"Expected 'items' list, got: {type(items)}")
     except Exception as e:
         logger.error("Sample item generation failed: %s", e)
         return []  # Signal failure — caller will ask user for input instead
     # Strip system fields from every generated item before returning
-    return [_clean_fields(item) for item in result.items]
+    return [_clean_fields(item) for item in items if isinstance(item, dict)]
 
 
 def _item_suggested_actions(list_name: str) -> List[str]:
@@ -443,7 +449,16 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             name_map = _build_column_name_map(columns)
 
             # ── Auto-generate: AI makes up the data ────────
-            if operation.auto_generate or (not operation.field_values and operation.quantity > 1):
+            _msg_lower = message.lower()
+            _wants_sample = (
+                operation.quantity > 1
+                or "sample" in _msg_lower
+                or "generate" in _msg_lower
+                or "you decide" in _msg_lower
+                or "make up" in _msg_lower
+                or "auto" in _msg_lower
+            )
+            if not operation.field_values and _wants_sample:
                 qty = max(1, min(operation.quantity or 1, 20))  # cap at 20
                 generated = await _generate_sample_items(list_name, columns, qty, repository=repository)
 
@@ -477,7 +492,6 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                         f"Add 1 sample item to list {list_name}",
                         f"Add 3 sample items to list {list_name}",
                         f"Add 5 sample items to list {list_name}",
-                        "I'll provide the data myself",
                     ]
                     return ChatResponse(
                         intent="chat",
@@ -519,7 +533,6 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                     f"Add 1 sample item to list {list_name}",
                     f"Add 3 sample items to list {list_name}",
                     f"Add 5 sample items to list {list_name}",
-                    "I'll provide the data myself",
                 ]
                 return ChatResponse(
                     intent="chat",

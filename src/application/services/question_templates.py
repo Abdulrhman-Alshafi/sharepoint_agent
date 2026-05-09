@@ -40,14 +40,6 @@ class QuestionTemplates:
             default_value="",
             validation_hint="Optional. If left blank, default settings apply based on permissions."
         ),
-        Question(
-            field_name="site_content",
-            question_text="What pages, lists, or libraries should the site include?\n\nSay **\"You choose the best setup\"** and I'll create the ideal structure based on the site's purpose, or list what you want (e.g., 'Home page, Documents library, Tasks list').",
-            field_type="text",
-            required=False,
-            options=["You choose the best setup", "Home page, Documents library, Tasks list", "Just the site, no extras"],
-            default_value="You choose the best setup"
-        ),
     ]
 
     # List questions
@@ -93,10 +85,10 @@ class QuestionTemplates:
         ),
         Question(
             field_name="target_site",
-            question_text="Where do you want to add this new content?",
+            question_text="Where do you want to add this new content?\n\nQuick option: choose **Use current site** to add it to the site you're currently in.",
             field_type="text",
             required=True,
-            options=None,
+            options=["Use current site"],
             default_value=None
         ),
     ]
@@ -129,10 +121,10 @@ class QuestionTemplates:
         ),
         Question(
             field_name="target_site",
-            question_text="Where do you want to add this new content?",
+            question_text="Where do you want to add this new content?\n\nQuick option: choose **Use current site** to add it to the site you're currently in.",
             field_type="text",
             required=True,
-            options=None,
+            options=["Use current site"],
             default_value=None
         ),
     ]
@@ -180,26 +172,11 @@ class QuestionTemplates:
             validation_hint="Use commas/new lines; use / for nested folders"
         ),
         Question(
-            field_name="needs_permissions",
-            question_text="Do you need to restrict who can access or upload to this library?",
-            field_type="choice",
-            required=True,
-            options=["Yes, restrict access", "No, everyone can access"],
-            default_value="No, everyone can access"
-        ),
-        Question(
-            field_name="permission_groups",
-            question_text="Who should have access? Please specify groups and their permission levels (e.g., 'HR Team: Contribute, Managers: Edit')",
-            field_type="text",
-            required=False,
-            validation_hint="Format: GroupName: PermissionLevel (Read/Contribute/Edit/Full Control)"
-        ),
-        Question(
             field_name="target_site",
-            question_text="Where do you want to add this new content?",
+            question_text="Where do you want to add this new content?\n\nQuick option: choose **Use current site** to add it to the site you're currently in.",
             field_type="text",
             required=True,
-            options=None,
+            options=["Use current site"],
             default_value=None
         ),
     ]
