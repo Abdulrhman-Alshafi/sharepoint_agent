@@ -16,7 +16,7 @@ from src.presentation.api.services import conversation_state
 from src.presentation.api.services.clarification_service import resolve_clarification_pick, is_location_hint, resolve_search_hint
 from src.presentation.api.intent.intent_router import detect_enhanced_intent
 from src.presentation.api.orchestrators.orchestrator_utils import pop_pending_action
-from src.presentation.api import ServiceContainer, get_repository
+from src.presentation.api import ServiceContainer, get_site_repository, get_list_repository, get_library_repository, get_page_repository, get_drive_repository
 
 # Intent orchestrators
 from src.presentation.api.orchestrators.item_orchestrator import handle_item_operations
@@ -161,16 +161,30 @@ def _build_user_query_service(raw_token: Optional[str], site_id: str):
     from src.infrastructure.external_services.ai_data_query_service import AIDataQueryService
     from src.infrastructure.services.smart_resource_discovery import SmartResourceDiscoveryService
 
-    user_repo = get_repository(user_token=raw_token, site_id=site_id)
-    graph_client = getattr(user_repo, "graph_client", None)
+    user_site_repo = get_site_repository(user_token=raw_token, site_id=site_id)
+    user_list_repo = get_list_repository(user_token=raw_token, site_id=site_id)
+    user_library_repo = get_library_repository(user_token=raw_token, site_id=site_id)
+    user_page_repo = get_page_repository(user_token=raw_token, site_id=site_id)
+    user_drive_repo = get_drive_repository(user_token=raw_token, site_id=site_id)
+
+    graph_client = getattr(user_site_repo, "graph_client", None)
     ai_client, ai_model = ServiceContainer.get_ai_client()
     smart_discovery = SmartResourceDiscoveryService(
-        sharepoint_repository=user_repo,
+        site_repository=user_site_repo,
+        list_repository=user_list_repo,
+        library_repository=user_library_repo,
+        page_repository=user_page_repo,
         ai_client=ai_client,
         ai_model=ai_model,
     )
     inner = AIDataQueryService(
-        user_repo, graph_client, site_id,
+        site_repository=user_site_repo,
+        list_repository=user_list_repo,
+        library_repository=user_library_repo,
+        page_repository=user_page_repo,
+        drive_repository=user_drive_repo,
+        graph_client=graph_client,
+        site_id=site_id,
         smart_discovery_service=smart_discovery,
         ai_client=ai_client,
         ai_model=ai_model,
@@ -197,7 +211,11 @@ class ChatOrchestrator:
         data_query_service: Any,
     ) -> ChatResponse:
         """Process a single chat interaction."""
-        
+        # Truncate history to prevent context window overflow
+        MAX_HISTORY = 10
+        if history and len(history) > MAX_HISTORY:
+            history = history[-MAX_HISTORY:]
+            
         message_lower_check = message.strip().lower()
 
 
@@ -229,8 +247,18 @@ class ChatOrchestrator:
                 _resource_name = _ctx.get("resource_name") or "resource"
 
                 try:
-                    _repo = get_repository(user_token=raw_token)
-                    _uc = UpdateResourceUseCase(_repo)
+                    _list_repo = get_list_repository(user_token=raw_token, site_id=_target_site_id)
+                    _page_repo = get_page_repository(user_token=raw_token, site_id=_target_site_id)
+                    _lib_repo = get_library_repository(user_token=raw_token, site_id=_target_site_id)
+                    _site_repo = get_site_repository(user_token=raw_token, site_id=_target_site_id)
+                    
+                    _uc = UpdateResourceUseCase(
+                        list_repository=_list_repo,
+                        page_repository=_page_repo,
+                        library_repository=_lib_repo,
+                        site_repository=_site_repo
+                    )
+                    
                     _exec_result = await _uc.execute(
                         resource_type=_resource_type,
                         site_id=_target_site_id,
@@ -341,6 +369,16 @@ class ChatOrchestrator:
                         user_login_name=user_login_name,
                         **page_ctx,
                     )
+                    # Update context for clarification query
+                    q_source_site_id = getattr(clar_result, "source_site_id", None) or clar_site_id or site_id
+                    q_source_list = getattr(clar_result, "source_list", None)
+                    q_source_rtype = getattr(clar_result, "source_resource_type", None) or "list"
+                    
+                    if q_source_list and q_source_rtype not in ("page", "site"):
+                        await conversation_state.set_last_created(session_id, q_source_list, "library" if q_source_rtype == "library" else "list", q_source_site_id)
+                    elif q_source_site_id and getattr(clar_result, "source_site_name", None):
+                        await conversation_state.set_last_created(session_id, getattr(clar_result, "source_site_name", ""), "site", q_source_site_id)
+
                     return ChatResponse(
                         intent="query",
                         reply=clar_result.answer,
@@ -380,10 +418,20 @@ class ChatOrchestrator:
             and active_gathering.phase not in (GatheringPhase.CONFIRMATION, GatheringPhase.COMPLETE)
         )
 
+        from src.presentation.api.utils.message_resolver import needs_resolution
+        
         original_enhanced_intent = detect_enhanced_intent(message)
-        if original_enhanced_intent and not in_active_gathering:
+        
+        # If the message needs resolution (has pronouns), we shouldn't trust the 
+        # static detector's guess because it lacks context. Resolve it first.
+        if needs_resolution(message) and not in_active_gathering:
+            resolved_message = resolve_followup_message(message, history)
+            effective_message = resolved_message
+            enhanced_intent = detect_enhanced_intent(resolved_message)
+        elif original_enhanced_intent and not in_active_gathering:
             effective_message = message
             enhanced_intent = original_enhanced_intent
+            resolved_message = message
         elif in_active_gathering:
             effective_message = message
             enhanced_intent = None
@@ -532,10 +580,16 @@ class ChatOrchestrator:
                     result_dto.answer += hint_suffix
 
                 # Update context
+                q_source_site_id = getattr(result_dto, "source_site_id", None) or site_id
                 q_source_list = getattr(result_dto, "source_list", None)
                 q_source_rtype = getattr(result_dto, "source_resource_type", None) or "list"
+                
+                # If they queried a specific list, save it
                 if q_source_list and q_source_rtype not in ("page", "site"):
-                    await conversation_state.set_last_created(session_id, q_source_list, "library" if q_source_rtype == "library" else "list", site_id)
+                    await conversation_state.set_last_created(session_id, q_source_list, "library" if q_source_rtype == "library" else "list", q_source_site_id)
+                # Else if they queried a specific site (e.g. meta query), save the site context
+                elif q_source_site_id and getattr(result_dto, "source_site_name", None):
+                    await conversation_state.set_last_created(session_id, getattr(result_dto, "source_site_name", ""), "site", q_source_site_id)
 
                 return ChatResponse(
                     intent="query",
@@ -616,26 +670,48 @@ class ChatOrchestrator:
                             else:
                                 try:
                                     # Try to resolve the site name to a site ID
-                                    repo = get_repository(user_token=raw_token)
-                                    all_sites = await repo.get_all_sites()
+                                    repo = get_site_repository(user_token=raw_token)
                                     matched_site = None
-                                    # Exact match first
-                                    for s in all_sites:
+                                    
+                                    # First try search_sites
+                                    search_results = await repo.search_sites(target_site_name)
+                                    for s in search_results:
                                         if s.get("displayName", "").lower() == normalized_target_site or s.get("name", "").lower() == normalized_target_site:
                                             matched_site = s
                                             break
-                                    # Partial match if no exact match
+                                            
                                     if not matched_site:
+                                        all_sites = await repo.get_all_sites()
+                                        # Exact match first
                                         for s in all_sites:
-                                            if normalized_target_site in s.get("displayName", "").lower() or normalized_target_site in s.get("name", "").lower():
+                                            if s.get("displayName", "").lower() == normalized_target_site or s.get("name", "").lower() == normalized_target_site:
                                                 matched_site = s
                                                 break
+                                        # Partial match if no exact match
+                                        if not matched_site:
+                                            for s in all_sites:
+                                                if normalized_target_site in s.get("displayName", "").lower() or normalized_target_site in s.get("name", "").lower():
+                                                    matched_site = s
+                                                    break
+                                                    
                                     if matched_site:
                                         resolved_target_site_id = matched_site.get("id") or site_id
                                         logger.info("Resolved target_site '%s' to site ID: %s", target_site_name, resolved_target_site_id)
+                                    else:
+                                        # We could not find the target site! Do not silently fallback.
+                                        logger.warning("Failed to resolve target_site '%s'. Sending error back to user.", target_site_name)
+                                        return ChatResponse(
+                                            intent="provision",
+                                            reply=f"⚠️ I couldn't find a SharePoint site named '{target_site_name}'. Please make sure the site exists and you have access to it. You can try again using the exact site name, or say 'current site' to build it here.",
+                                            session_id=session_id,
+                                        )
                                 except Exception as site_resolve_err:
-                                    logger.warning("Failed to resolve target_site '%s': %s", target_site_name, site_resolve_err)
-                                    resolved_target_site_id = site_id
+                                    logger.warning("Error while resolving target_site '%s': %s", target_site_name, site_resolve_err)
+                                    return ChatResponse(
+                                        intent="provision",
+                                        reply=f"⚠️ There was an error looking up the site '{target_site_name}'. Please try again, or use 'current site'.",
+                                        session_id=session_id,
+                                    )
 
                         result_dto = await provisioning_service.provision_resources(
                             provision_prompt,
@@ -655,7 +731,7 @@ class ChatOrchestrator:
                                 lib_meta = result_dto.created_document_libraries[0] if result_dto.created_document_libraries else {}
                                 lib_id = lib_meta.get("id")
                                 if lib_id:
-                                    repo = get_repository(user_token=raw_token)
+                                    repo = get_drive_repository(user_token=raw_token)
                                     created = []
                                     failed = []
                                     for raw_path in folder_paths:
@@ -722,7 +798,7 @@ class ChatOrchestrator:
                         if spec and spec.collected_fields.get("target_site"):
                             target_site_name = spec.collected_fields["target_site"].strip()
                             try:
-                                repo = get_repository(user_token=raw_token)
+                                repo = get_site_repository(user_token=raw_token)
                                 all_sites = await repo.get_all_sites()
                                 matched_site = None
                                 for s in all_sites:
@@ -759,7 +835,7 @@ class ChatOrchestrator:
                                 lib_meta = result_dto.created_document_libraries[0] if result_dto.created_document_libraries else {}
                                 lib_id = lib_meta.get("id")
                                 if lib_id:
-                                    repo = get_repository(user_token=raw_token)
+                                    repo = get_drive_repository(user_token=raw_token)
                                     created = []
                                     failed = []
                                     for raw_path in folder_paths:
@@ -847,7 +923,7 @@ class ChatOrchestrator:
                                 _potential_site = _after_pat
                                 break
                     if _potential_site:
-                        _fallback_repo = get_repository(user_token=raw_token)
+                        _fallback_repo = get_site_repository(user_token=raw_token)
                         _fallback_sites = await _fallback_repo.get_all_sites()
                         _matched_fallback = None
                         for _s in _fallback_sites:

@@ -107,42 +107,33 @@ class GenAICompletions:
             data = json.loads(response_text)
         except json.JSONDecodeError:
             # Model returned plain text / markdown instead of JSON.
-            # Try to construct the model using the text as the primary text field.
-            import typing
-            fields = response_model.model_fields
-            primary_field = next(
-                (f for f in ("answer", "reply", "text", "content", "message") if f in fields),
-                None,
+            # Attempt a single correction retry.
+            retry_prompt = (
+                f"Your previous response was invalid JSON. Please return ONLY valid JSON "
+                f"matching this exact structure:\n{json.dumps(example_obj, indent=2)}\n\n"
+                f"Do not include any other text.\n\nPrevious response:\n{response_text[:1000]}"
             )
-            if primary_field:
-                fallback: dict = {}
-                for field_name, field_info in fields.items():
-                    if field_name == primary_field:
-                        fallback[field_name] = response_text
-                    elif field_info.default is not None and field_info.default is not PydanticUndefined:
-                        fallback[field_name] = field_info.default
-                    elif field_info.default_factory is not None:  # type: ignore[attr-defined]
-                        fallback[field_name] = field_info.default_factory()  # type: ignore[misc]
-                    else:
-                        # Infer a sensible empty value from the annotation
-                        ann = field_info.annotation
-                        origin = getattr(ann, "__origin__", None)
-                        if origin is list or ann is list:
-                            fallback[field_name] = []
-                        elif origin is dict or ann is dict:
-                            fallback[field_name] = {}
-                        elif ann is str:
-                            fallback[field_name] = ""
-                        elif ann is bool:
-                            fallback[field_name] = False
-                        elif ann is int or ann is float:
-                            fallback[field_name] = 0
-                        # else leave missing and let Pydantic raise if required
-                try:
-                    return response_model(**fallback)
-                except Exception:
-                    pass
-            raise ValueError(f"Model returned invalid JSON: {response_text[:200]}")
+            retry_response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=retry_prompt,
+            )
+            retry_text = retry_response.text.strip()
+            
+            if retry_text.startswith("```json"):
+                retry_text = retry_text.split("```json")[1].split("```")[0].strip()
+            elif retry_text.startswith("```"):
+                retry_text = retry_text.split("```")[1].split("```")[0].strip()
+                
+            if not retry_text.startswith("{"):
+                import re as _re
+                m = _re.search(r'\{.*\}', retry_text, _re.DOTALL)
+                if m:
+                    retry_text = m.group(0).strip()
+            
+            try:
+                data = json.loads(retry_text)
+            except json.JSONDecodeError:
+                raise ValueError(f"Model returned invalid JSON after retry: {retry_text[:200]}")
         return response_model(**data)
 
 

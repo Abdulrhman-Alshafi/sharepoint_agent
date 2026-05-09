@@ -126,11 +126,16 @@ def _build_webparts_from_operation(operation: Any, original_message: str) -> Lis
 
 async def handle_page_operations(message: str, session_id: str, site_id: str, user_token: str = None, user_login_name: str = "", last_created: tuple = None) -> ChatResponse:
     """Handle page operations (create, publish, list, copy, delete)."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.infrastructure.external_services.page_operation_parser import PageOperationParserService
 
     try:
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         
         # Prefer the site where the page was created (from last_created[2]) over the request site
         _page_site_id = (last_created[2] if (last_created and len(last_created) > 2 and last_created[2]) else None) or site_id
@@ -151,7 +156,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
         
         # ── LIST OPERATION ──────────────────────────────────
         if operation.operation == "list":
-            pages = await repository.get_all_pages(site_id=_page_site_id)
+            pages = await page_repository.get_all_pages(site_id=_page_site_id)
             if not pages:
                 return ChatResponse(
                     intent="chat",
@@ -186,7 +191,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
             
             # Search for the page
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             
             if not pages:
                 return ChatResponse(
@@ -239,7 +244,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
             target_site_id = site_id
             if getattr(operation, "target_site_name", None):
                 try:
-                    found = await repository.search_sites(operation.target_site_name)
+                    found = await site_repository.search_sites(operation.target_site_name)
                     if found:
                         target_site_id = found[0].get("id", site_id)
                     else:
@@ -304,7 +309,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                 layout=graph_layout,
             )
 
-            result = await repository.create_page(new_page, site_id=target_site_id)
+            result = await page_repository.create_page(new_page, site_id=target_site_id)
 
             # Audit the creation
             from src.application.services.audit_service import AuditService
@@ -329,7 +334,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                 )
             
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             
             if not pages:
                 return ChatResponse(
@@ -338,7 +343,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                 )
             
             page_id = pages[0].get("id")
-            await repository.publish_page(page_id, site_id=_page_site_id)
+            await page_repository.publish_page(page_id, site_id=_page_site_id)
             
             return ChatResponse(
                 intent="chat",
@@ -366,11 +371,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                         reply="⚠️ I’m not sure which page you’d like to delete. Please say the exact page name."
                     )
 
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
 
             if not pages and last_created and len(last_created) > 1 and last_created[1] == "page" and last_created[0]:
                 search_term = last_created[0]
-                pages = await repository.search_pages(search_term, site_id=_page_site_id)
+                pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
 
             if not pages:
                 return ChatResponse(
@@ -379,7 +384,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                 )
 
             page_id = pages[0].get("id")
-            await repository.delete_page(page_id, site_id=_page_site_id)
+            await page_repository.delete_page(page_id, site_id=_page_site_id)
             
             return ChatResponse(
                 intent="chat",
@@ -394,11 +399,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify which page to unpublish.\n\nExample: 'Unpublish the Welcome page'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            await repository.unpublish_page(page_id, site_id=site_id)
+            await page_repository.unpublish_page(page_id, site_id=site_id)
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Page **{search_term}** has been unpublished (set back to draft)."
@@ -412,11 +417,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify which page to check out.\n\nExample: 'Checkout the Policies page'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            await repository.checkout_page(page_id, site_id=site_id)
+            await page_repository.checkout_page(page_id, site_id=site_id)
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Page **{search_term}** checked out. You now have exclusive edit access.\n\n"
@@ -431,11 +436,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify which page to check in.\n\nExample: 'Check in the Policies page'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            await repository.checkin_page(page_id, site_id=site_id)
+            await page_repository.checkin_page(page_id, site_id=site_id)
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Page **{search_term}** checked in successfully."
@@ -450,11 +455,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                 )
             search_term = operation.page_title or operation.page_name
             new_title = operation.new_title or operation.target_page_title or f"Copy of {search_term}"
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            result = await repository.copy_page(page_id, new_title, site_id=site_id)
+            result = await page_repository.copy_page(page_id, new_title, site_id=site_id)
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Page **{search_term}** copied to **{new_title}**!\n\n"
@@ -470,11 +475,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify which page to list versions for.\n\nExample: 'Show versions of the Home page'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            versions = await repository.get_page_versions(page_id, site_id=site_id)
+            versions = await page_repository.get_page_versions(page_id, site_id=site_id)
             if not versions:
                 return ChatResponse(intent="chat", reply=f"📋 No versions found for **{search_term}**.")
             reply = f"📋 **{len(versions)} version(s)** of **{search_term}**:\n\n"
@@ -501,11 +506,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify the version ID to restore.\n\nExample: 'Restore version 3 of the Policies page'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            await repository.restore_page_version(page_id, operation.version_id, site_id=site_id)
+            await page_repository.restore_page_version(page_id, operation.version_id, site_id=site_id)
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Page **{search_term}** restored to version **{operation.version_id}**."
@@ -519,11 +524,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify which page to share.\n\nExample: 'Share a link to the Team page'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            result = await repository.create_page_share_link(page_id, site_id=site_id)
+            result = await page_repository.create_page_share_link(page_id, site_id=site_id)
             link = result.get('link', {}).get('webUrl') or result.get('webUrl', 'N/A')
             return ChatResponse(
                 intent="chat",
@@ -539,11 +544,11 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify which page to promote as news.\n\nExample: 'Promote Company News as a news article'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
-            await repository.promote_page_as_news(page_id, site_id=site_id)
+            await page_repository.promote_page_as_news(page_id, site_id=site_id)
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Page **{search_term}** has been promoted as a news article and will appear in news feeds."
@@ -562,7 +567,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify the new content.\n\nExample: 'Update the About page with: We build great software'"
                 )
             search_term = operation.page_title or operation.page_name
-            pages = await repository.search_pages(search_term, site_id=_page_site_id)
+            pages = await page_repository.search_pages(search_term, site_id=_page_site_id)
             if not pages:
                 return ChatResponse(intent="chat", reply=f"❌ Page '{search_term}' not found.")
             page_id = pages[0].get('id')
@@ -572,7 +577,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                 title=search_term,
                 webparts=[WebPart(type="Text", properties={"content": operation.content})]
             )
-            await repository.update_page_content(page_id, updated_page)
+            await page_repository.update_page_content(page_id, updated_page)
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Page **{search_term}** updated successfully!"
@@ -587,7 +592,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     intent="chat",
                     reply=f"⚠️ Could not find page **{search_term}**. Please check the title."
                 )
-            data = await repository.get_page_analytics(page_id, site_id=site_id)
+            data = await page_repository.get_page_analytics(page_id, site_id=site_id)
             if not data:
                 return ChatResponse(
                     intent="chat",
@@ -622,7 +627,7 @@ async def handle_page_operations(message: str, session_id: str, site_id: str, us
                     intent="chat",
                     reply="⚠️ Please specify a date and time, e.g. 'Schedule the Home page for 2025-09-01T09:00:00Z'."
                 )
-            result = await repository.schedule_page_publish(page_id, scheduled_dt, site_id=site_id)
+            result = await page_repository.schedule_page_publish(page_id, scheduled_dt, site_id=site_id)
             if result.get("error"):
                 return ChatResponse(
                     intent="chat",

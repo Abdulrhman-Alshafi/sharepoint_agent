@@ -1,7 +1,7 @@
 """Handler for SharePoint library operations."""
 
 from src.domain.entities.conversation import ResourceType
-from src.presentation.api import ServiceContainer
+from src.presentation.api import get_drive_repository, ServiceContainer
 from src.presentation.api.schemas.chat_schemas import ChatResponse
 from src.presentation.api.orchestrators.orchestrator_utils import get_logger, error_response
 
@@ -10,11 +10,17 @@ logger = get_logger(__name__)
 
 async def handle_library_operations(message: str, session_id: str, site_id: str, user_token: str = None, user_login_name: str = "", last_created: tuple = None) -> ChatResponse:
     """Handle library operations (create, list, delete, configure)."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_drive_repository, get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.infrastructure.external_services.library_operation_parser import LibraryOperationParserService
     
     try:
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        drive_repository = get_drive_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         
         # Prefer the site where the library was created (from last_created[2]) over the request site
         _lib_site_id = (last_created[2] if (last_created and len(last_created) > 2 and last_created[2]) else None) or site_id
@@ -57,7 +63,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
         
         # ── LIST OPERATION ──────────────────────────────────
         if operation.operation == "list":
-            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
             if not libraries:
                 return ChatResponse(
                     intent="chat",
@@ -88,7 +94,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 )
             
             # Find the library
-            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
             matched_lib = next(
                 (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
                 None
@@ -128,28 +134,25 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 if name_lower not in message.lower() or name_lower in _GENERIC_NAMES:
                     operation.library_name = None
 
-            if not operation.library_name:
-                gathering_service = ServiceContainer.get_gathering_service()
-                _, first_question = gathering_service.start_gathering(
-                    session_id, message, ResourceType.LIBRARY
-                )
+            gathering_service = ServiceContainer.get_gathering_service()
+            _, first_question = gathering_service.start_gathering(
+                session_id, message, ResourceType.LIBRARY
+            )
 
-                if first_question:
-                    return ChatResponse(
-                        intent="provision",
-                        reply=f"Sure! Let me help you set that up.\n\n{first_question.question_text}",
-                        requires_input=True,
-                        question_prompt=first_question.question_text,
-                        field_type=first_question.field_type,
-                        field_options=first_question.options,
-                        quick_suggestions=first_question.options[:3] if first_question.options else None,
-                        session_id=session_id,
-                    )
-
+            if first_question:
                 return ChatResponse(
-                    intent="chat",
-                    reply="⚠️ Please specify a library name.\n\nExample: 'Create a library called Project Files'"
+                    intent="provision",
+                    reply=f"Sure! Let me help you set that up.\n\n{first_question.question_text}",
+                    requires_input=True,
+                    question_prompt=first_question.question_text,
+                    field_type=first_question.field_type,
+                    field_options=first_question.options,
+                    quick_suggestions=first_question.options[:3] if first_question.options else None,
+                    session_id=session_id,
                 )
+
+            # If all required and optional fields are somehow pre-filled (first_question is None), proceed.
+            gathering_service.confirm_and_complete(session_id)
             
             from src.domain.entities.core import SPList
             from src.domain.value_objects import SPColumn
@@ -162,7 +165,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 columns=[SPColumn(name="Title", type="text", required=False)]  # Document libraries have default columns
             )
             
-            result = await repository.create_document_library(new_library, site_id=site_id)
+            result = await library_repository.create_document_library(new_library, site_id=site_id)
 
             created_folders = []
             folder_warnings = []
@@ -176,7 +179,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 for idx, folder_name in enumerate(segments):
                     parent = "/".join(segments[:idx]) if idx > 0 else "/"
                     try:
-                        await repository.create_folder(
+                        await drive_repository.create_folder(
                             library_id=library_id,
                             folder_name=folder_name,
                             parent_folder_path=parent if parent != "/" else None,
@@ -195,7 +198,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 if library_id:
                     try:
                         # Enable major versioning via PATCH on the list settings endpoint
-                        await repository.enable_list_versioning(library_id, site_id)
+                        await list_repository.enable_list_versioning(library_id, site_id)
                         logger.info("Versioning enabled for library '%s'", library_id)
                         versioning_note = "\n✅ Versioning enabled (up to 500 versions)."
                     except Exception as e:
@@ -224,7 +227,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                     reply="⚠️ Please specify which library to delete.\n\nExample: 'Delete the old archives library'"
                 )
             
-            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
             matched_lib = next(
                 (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
                 None
@@ -237,7 +240,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 )
             
             library_id = matched_lib.get('id')
-            await repository.delete_list(library_id, site_id=site_id)
+            await list_repository.delete_list(library_id, site_id=site_id)
             
             return ChatResponse(
                 intent="chat",
@@ -252,7 +255,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                     reply="⚠️ Please specify a library name.\n\nExample: 'Show me the schema of Documents library'"
                 )
             
-            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
             matched_lib = next(
                 (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
                 None
@@ -265,7 +268,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 )
             
             library_id = matched_lib.get('id')
-            schema = await repository.get_library_schema(library_id, site_id=site_id)
+            schema = await library_repository.get_library_schema(library_id, site_id=site_id)
             
             columns = schema.get('columns', [])
             reply = f"📋 Schema for **{operation.library_name}**:\n\n"
@@ -293,7 +296,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                            "Example: 'Add a Status column to the Project Files library'"
                 )
             
-            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
             matched_lib = next(
                 (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
                 None
@@ -315,7 +318,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
             )
             
             library_id = matched_lib.get('id')
-            await repository.add_column_to_list(library_id, new_column, site_id=site_id)
+            await list_repository.add_column_to_list(library_id, new_column, site_id=site_id)
             
             return ChatResponse(
                 intent="chat",
@@ -337,7 +340,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 )
             
             # Find the library
-            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
             matched_lib = next(
                 (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
                 None
@@ -371,7 +374,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 for idx, folder_name in enumerate(segments):
                     parent = "/".join(segments[:idx]) if idx > 0 else "/"
                     try:
-                        await repository.create_folder(
+                        await drive_repository.create_folder(
                             library_id=library_id,
                             folder_name=folder_name,
                             parent_folder_path=parent if parent != "/" else None,
@@ -407,7 +410,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 )
             
             # Find the library
-            libraries = await repository.get_all_document_libraries(site_id=_lib_site_id)
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
             matched_lib = next(
                 (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
                 None
@@ -424,7 +427,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
             
             # Get all folders in the library
             try:
-                folder_contents = await repository.get_folder_contents(library_id, folder_path="/", site_id=_lib_site_id)
+                folder_contents = await drive_repository.get_folder_contents(library_id, folder_path="/", site_id=_lib_site_id)
                 folders = [item for item in (folder_contents or []) if item.get('folder')]
             except Exception as e:
                 logger.debug("Could not fetch folder list: %s", e)

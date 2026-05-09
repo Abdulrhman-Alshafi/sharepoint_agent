@@ -3,14 +3,13 @@
 from src.domain.entities.conversation import ContentAnalysis
 from src.domain.entities.core import SPPermissionMask
 from src.domain.exceptions import PermissionDeniedException
-from src.domain.repositories import SharePointRepository
 from src.infrastructure.services.content_analyzer import ContentAnalyzerService
 
 
 class AnalyzeContentUseCase:
     """Analyze SharePoint sites, pages, and lists to understand their content."""
     
-    def __init__(self, content_analyzer: ContentAnalyzerService, permission_repository: SharePointRepository = None):
+    def __init__(self, content_analyzer: ContentAnalyzerService, permission_repository=None):
         self.content_analyzer = content_analyzer
         self.permission_repository = permission_repository
     

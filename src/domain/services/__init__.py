@@ -1,5 +1,6 @@
 """Domain services - contain business logic and use domain models."""
 
+from typing import Optional
 from abc import ABC, abstractmethod
 from src.domain.entities import ProvisioningBlueprint, DataQueryResult, PromptValidationResult
 from src.domain.services.intent_classification import IntentClassificationService
@@ -30,7 +31,13 @@ class DataQueryService(ABC):
 
     @abstractmethod
     async def answer_question(
-        self, question: str, site_ids=None
+        self, 
+        question: str, 
+        site_ids=None,
+        page_id: Optional[str] = None,
+        page_url: Optional[str] = None,
+        page_title: Optional[str] = None,
+        context_site_id: Optional[str] = None,
     ) -> DataQueryResult:
         """Answer a user question by reasoning over SharePoint list data (RAG).
 
@@ -38,5 +45,9 @@ class DataQueryService(ABC):
             question: Natural-language question from the user.
             site_ids: Optional list of SP site IDs to scope the search.
                       If None the service decides which sites to use.
+            page_id: Optional SharePoint page ID for context.
+            page_url: Optional SharePoint page URL for context.
+            page_title: Optional SharePoint page title for context.
+            context_site_id: Optional contextual site ID.
         """
         pass

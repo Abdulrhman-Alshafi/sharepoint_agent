@@ -263,15 +263,20 @@ def _item_suggested_actions(list_name: str) -> List[str]:
 
 async def handle_item_operations(message: str, session_id: str, site_id: str, user_token: str = None, last_created: tuple = None, user_login_name: str = "") -> ChatResponse:
     """Handle list item CRUD operations (add/update/delete/query records) plus attachments and views."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.infrastructure.external_services.list_item_parser import ListItemParserService
     from src.application.use_cases.list_item_operations_use_case import ListItemOperationsUseCase
     from src.infrastructure.services.field_validator import FieldValidationError
 
     try:
         # Use OBO (per-user) repository when token is available
-        repository = get_repository(user_token=user_token)
-        item_operations = ListItemOperationsUseCase(repository)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
+        item_operations = ListItemOperationsUseCase(list_repository)
         # Prefer the site where the list was created (from last_created[2]) over the request site
         _item_site_id = (last_created[2] if (last_created and len(last_created) > 2 and last_created[2]) else None) or site_id
 
@@ -300,7 +305,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             # Find the list, get its columns, then pass them as structured context
             # so the AI can map "with the Tecate Original title" → Title='Tecate Original'
             try:
-                _ctx_all_lists = await repository.get_all_lists(_item_site_id)
+                _ctx_all_lists = await list_repository.get_all_lists(_item_site_id)
                 _ctx_list = None
                 _lname_lower = _last_list_name.lower()
                 for _lst in _ctx_all_lists:
@@ -310,7 +315,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                         break
                 if _ctx_list:
                     _ctx_list_id = _ctx_list.get("id")
-                    _ctx_columns = await repository.get_list_columns(_ctx_list_id, site_id=_item_site_id)
+                    _ctx_columns = await list_repository.get_list_columns(_ctx_list_id, site_id=_item_site_id)
                     # Filter out hidden/system columns
                     _SYSTEM_COLS = frozenset({"ContentType", "Attachments", "_UIVersionString",
                                              "Edit", "LinkTitleNoMenu", "LinkTitle", "DocIcon",
@@ -412,7 +417,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             )
         
         # Find the list by name
-        all_lists = await repository.get_all_lists(_item_site_id)
+        all_lists = await list_repository.get_all_lists(_item_site_id)
         target_list = None
         for lst in all_lists:
             list_name = lst.get("displayName", "").lower()
@@ -443,7 +448,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
         if operation.operation == "create":
             # Fetch columns once — needed for both empty-data prompts and auto-generate
             try:
-                columns = await repository.get_list_columns(list_id, _item_site_id)
+                columns = await list_repository.get_list_columns(list_id, _item_site_id)
             except Exception:
                 columns = []
             name_map = _build_column_name_map(columns)
@@ -460,7 +465,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             )
             if not operation.field_values and _wants_sample:
                 qty = max(1, min(operation.quantity or 1, 20))  # cap at 20
-                generated = await _generate_sample_items(list_name, columns, qty, repository=repository)
+                generated = await _generate_sample_items(list_name, columns, qty, repository=list_repository)
 
                 # If generation failed (empty list), fall through to ask user
                 if not generated:
@@ -472,7 +477,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                     try:
                         clean = _clean_fields(item_data)
                         clean = _remap_to_internal_fields(clean, name_map)
-                        clean = await _resolve_person_fields(clean, columns, repository)
+                        clean = await _resolve_person_fields(clean, columns, list_repository)
                         await item_operations.create_item_validated(list_id, clean, _item_site_id, user_login=user_login_name)
                         created_count += 1
                     except Exception as e:
@@ -551,7 +556,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             try:
                 clean_values = _clean_fields(operation.field_values)
                 clean_values = _remap_to_internal_fields(clean_values, name_map)
-                clean_values = await _resolve_person_fields(clean_values, columns, repository)
+                clean_values = await _resolve_person_fields(clean_values, columns, list_repository)
                 # Use validated create for better error messages
                 result = await item_operations.create_item_validated(list_id, clean_values, _item_site_id, user_login=user_login_name)
 
@@ -799,9 +804,9 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             # ── Resolve personOrGroup LookupId fields → display names ─────
             try:
                 from src.infrastructure.services.person_field_resolver import resolve_person_fields
-                _q_columns = await repository.get_list_columns(list_id, site_id=_item_site_id)
+                _q_columns = await list_repository.get_list_columns(list_id, site_id=_item_site_id)
                 _q_fields_list = [it.get("fields", {}) for it in items]
-                graph_client = getattr(repository, "graph_client", None)
+                graph_client = getattr(list_repository, "graph_client", None)
                 if graph_client:
                     await resolve_person_fields(
                         _q_fields_list, _q_columns, graph_client,

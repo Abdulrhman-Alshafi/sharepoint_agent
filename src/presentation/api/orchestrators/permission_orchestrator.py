@@ -8,11 +8,16 @@ logger = get_logger(__name__)
 
 async def handle_permission_operations(message: str, session_id: str, site_id: str, user_token: str = None, user_login_name: str = "") -> ChatResponse:
     """Handle permission operations (grant, revoke, check, list groups)."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.infrastructure.external_services.permission_operation_parser import PermissionOperationParserService
     
     try:
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         
         # Parse the operation using AI
         operation = await PermissionOperationParserService.parse_permission_operation(message)
@@ -30,7 +35,7 @@ async def handle_permission_operations(message: str, session_id: str, site_id: s
         
         # ── LIST GROUPS OPERATION ───────────────────────────
         if operation.operation == "list_groups":
-            groups = await repository.get_site_groups(site_id=site_id)
+            groups = await site_permission_repository.get_site_groups(site_id=site_id)
             
             if not groups:
                 return ChatResponse(
@@ -71,7 +76,7 @@ async def handle_permission_operations(message: str, session_id: str, site_id: s
                 description=f"SharePoint group: {operation.group_name}"
             )
             
-            result = await repository.create_site_group(new_group, site_id=site_id)
+            result = await site_repository.create_site_group(new_group, site_id=site_id)
             
             return ChatResponse(
                 intent="chat",
@@ -132,9 +137,9 @@ async def handle_permission_operations(message: str, session_id: str, site_id: s
             
             # Find the resource (library or list)
             if operation.resource_type == "library":
-                resources = await repository.get_all_document_libraries(site_id=site_id)
+                resources = await library_repository.get_all_document_libraries(site_id=site_id)
             else:
-                resources = await repository.get_all_lists(site_id=site_id)
+                resources = await list_repository.get_all_lists(site_id=site_id)
             
             matched_resource = next(
                 (res for res in resources if operation.resource_name.lower() in res.get('displayName', '').lower()),
@@ -149,7 +154,7 @@ async def handle_permission_operations(message: str, session_id: str, site_id: s
             
             # Fetch role assignments from SharePoint REST API
             try:
-                permissions_data = await repository.get_list_permissions(
+                permissions_data = await list_repository.get_list_permissions(
                     matched_resource.get("id"), site_id=site_id
                 )
             except Exception as perm_err:
@@ -215,9 +220,9 @@ async def handle_permission_operations(message: str, session_id: str, site_id: s
             list_id: str | None = None
             if operation.resource_name:
                 if operation.resource_type == "library":
-                    resources = await repository.get_all_document_libraries(site_id=site_id)
+                    resources = await library_repository.get_all_document_libraries(site_id=site_id)
                 else:
-                    resources = await repository.get_all_lists(site_id=site_id)
+                    resources = await list_repository.get_all_lists(site_id=site_id)
                 matched = next(
                     (r for r in resources if operation.resource_name.lower() in r.get("displayName", "").lower()),
                     None

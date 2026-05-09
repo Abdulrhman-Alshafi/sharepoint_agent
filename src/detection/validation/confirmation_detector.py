@@ -25,7 +25,7 @@ from src.detection.base import (
 logger = logging.getLogger(__name__)
 
 # ── Layer 1: exact token match ───────────────────────────────────────────────
-_CONFIRM_EXACT = frozenset({"yes", "yes.", "confirm", "confirmed", "ok", "okay", "sure", "proceed"})
+_CONFIRM_EXACT = frozenset({"yes", "yes.", "confirm", "confirmed", "ok", "okay", "sure", "proceed", "yess", "yep", "yeah", "yea"})
 
 # ── Layer 2: prefix match ────────────────────────────────────────────────────
 _CONFIRM_PREFIXES = (
@@ -33,6 +33,7 @@ _CONFIRM_PREFIXES = (
     "yes, delete",
     "yes, remove",
     "yes delete",
+    "yess delete",
     "yes remove",
     "yes, proceed",
     "yes proceed",
@@ -46,7 +47,7 @@ _CONFIRM_PREFIXES = (
 
 # ── Layer 3: regex patterns ──────────────────────────────────────────────────
 _CONFIRM_PATTERNS = (
-    re.compile(r"^yes[,\s]"),
+    re.compile(r"^(yes|yess|yep|yeah|yea)[,\s]"),
     re.compile(r"^(sure|ok|okay|confirmed|proceed|go ahead)\b"),
 )
 

@@ -16,13 +16,15 @@ class LibraryAnalysisUseCase:
 
     def __init__(
         self,
-        sharepoint_repository: ILibraryRepository,
+        library_repository,
+        drive_repository,
         document_index: DocumentIndexService,
         document_parser: DocumentParserService,
         document_intelligence: DocumentIntelligenceService,
         library_intelligence: LibraryIntelligenceService
     ):
-        self.sharepoint_repository = sharepoint_repository
+        self.library_repository = library_repository
+        self.drive_repository = drive_repository
         self.document_index = document_index
         self.document_parser = document_parser
         self.document_intelligence = document_intelligence
@@ -39,7 +41,7 @@ class LibraryAnalysisUseCase:
             Library summary dictionary
         """
         # Get library files
-        file_items = await self.sharepoint_repository.get_library_items(library_id)
+        file_items = await self.drive_repository.get_library_items(library_id)
         
         # Get indexed documents
         indexed_docs = await self.document_index.get_library_documents(library_id)
@@ -77,7 +79,7 @@ class LibraryAnalysisUseCase:
             raise ValueError("At least 2 libraries required for comparison")
         
         # Get all libraries
-        all_libs = await self.sharepoint_repository.get_all_document_libraries()
+        all_libs = await self.library_repository.get_all_document_libraries()
         
         # Build libraries data
         libraries_data = []
@@ -94,7 +96,7 @@ class LibraryAnalysisUseCase:
                 continue
             
             # Get files and stats
-            files = await self.sharepoint_repository.get_library_items(lib_id)
+            files = await self.drive_repository.get_library_items(lib_id)
             indexed = await self.document_index.get_library_documents(lib_id)
             stats = await self.document_index.get_library_stats(lib_id)
             
@@ -251,7 +253,7 @@ class LibraryAnalysisUseCase:
             Library statistics
         """
         # Get files
-        files = await self.sharepoint_repository.get_library_items(library_id)
+        files = await self.drive_repository.get_library_items(library_id)
         
         # Get index stats
         index_stats = await self.document_index.get_library_stats(library_id)

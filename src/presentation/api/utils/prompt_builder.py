@@ -117,6 +117,7 @@ def build_provisioning_prompt_from_spec(spec) -> str:
             
         # Make it explicitly clear this is a CREATE action, not UPDATE
         prompt += " IMPORTANT: This is a CREATE operation for a new list. Do not update any existing lists. Set action to CREATE."
+        prompt += " Do NOT create any sites, pages, or document libraries — ONLY create the requested list."
             
         return prompt
     
@@ -159,6 +160,7 @@ def build_provisioning_prompt_from_spec(spec) -> str:
             prompt += f" The main content to display is: {main_content}."
             
         prompt += " IMPORTANT: You MUST generate at least one webpart object (type='rte' for text, or suitable types for dashboards) in the webparts array. Set action to CREATE."
+        prompt += " Do NOT create any sites, lists, or document libraries — ONLY create the requested page."
         
         return prompt
     
@@ -194,6 +196,7 @@ def build_provisioning_prompt_from_spec(spec) -> str:
             )
         
         prompt += " IMPORTANT: This is a CREATE operation for a new document library. Set action to CREATE."
+        prompt += " Do NOT create any sites, lists, or pages — ONLY create the requested document library."
         
         return prompt
     

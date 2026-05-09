@@ -58,21 +58,14 @@ class UserIdentifierMiddleware(BaseHTTPMiddleware):
             try:
                 from src.infrastructure.config import settings
                 
-                # For JWT tokens, attempt a best-effort decode (no signature
-                # verification) to get the user identity for rate-limit bucketing.
+                # Instead, we simply hash the token to use as a rate-limiting bucket identifier.
                 # Full validation happens later in get_current_user dependency.
                 try:
-                    import base64 as _b64, json as _json
-                    parts = token.split(".")
-                    if len(parts) == 3:
-                        padding = 4 - len(parts[1]) % 4
-                        payload_json = _b64.urlsafe_b64decode(parts[1] + "=" * padding)
-                        claims = _json.loads(payload_json)
-                        user = claims.get("upn") or claims.get("email") or claims.get("preferred_username")
-                        if user:
-                            request.state.current_user = user
-                except Exception:
-                    pass  # Rate limiter will fall back to IP
+                    import hashlib
+                    hashed_token = hashlib.sha256(token.encode()).hexdigest()
+                    request.state.current_user = f"token_hash:{hashed_token}"
+                except Exception as e:
+                    logger.warning("Auth middleware failed to hash token: %s", e)
             except Exception as e:
                 # If anything fails, user will be rate limited by IP (fallback in limiter)
                 logger.warning("Auth middleware failed to identify user: %s", e)
@@ -106,13 +99,22 @@ def create_app() -> FastAPI:
         # This avoids attempting OBO flow without a valid user token.
 
         # Phase 4: Run OntologyExpander once at startup to load custom ontology
+        # Run as a background task to prevent blocking container startup
         try:
+            import asyncio
             from src.infrastructure.services.ontology_expander import OntologyExpander
-            _promoted = await OntologyExpander().expand()
-            if _promoted:
-                logger.info("OntologyExpander promoted %d new phrases at startup", _promoted)
+            
+            async def run_expander():
+                try:
+                    _promoted = await OntologyExpander().expand()
+                    if _promoted:
+                        logger.info("OntologyExpander promoted %d new phrases at startup", _promoted)
+                except Exception as _oe_exc:
+                    logger.warning("OntologyExpander background run failed: %s", _oe_exc)
+            
+            asyncio.create_task(run_expander())
         except Exception as _oe_exc:
-            logger.warning("OntologyExpander startup run failed (non-fatal): %s", _oe_exc)
+            logger.warning("Failed to start OntologyExpander task: %s", _oe_exc)
 
         yield
         logger.info("Shutting down SharePoint AI API...")
@@ -165,12 +167,9 @@ def create_app() -> FastAPI:
             tenant_origins,
         )
     else:
-        # Fallback: allow all SharePoint subdomains (less secure, logged warning)
-        cors_kwargs["allow_origin_regex"] = r"https://[\w-]+\.sharepoint\.com"
-        logger.warning(
-            "CORS: using broad regex for SharePoint origins. "
-            "Set ALLOWED_SHAREPOINT_TENANTS for stricter validation."
-        )
+        # Strict mode requires ALLOWED_SHAREPOINT_TENANTS
+        logger.error("CORS: ALLOWED_SHAREPOINT_TENANTS is not set. Refusing to start in insecure mode.")
+        raise ValueError("ALLOWED_SHAREPOINT_TENANTS must be set for secure CORS validation.")
 
     app.add_middleware(CORSMiddleware, **cors_kwargs)
 

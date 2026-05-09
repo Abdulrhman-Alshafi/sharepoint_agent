@@ -49,13 +49,23 @@ def _resolve_last_resource_from_history(history: List[Dict[str, Any]]) -> Tuple[
 
 async def handle_delete_operations(message: str, session_id: str, site_id: str, provisioning_service: ProvisioningApplicationService, user_email: str = None, user_login_name: str = None, user_token: str = None, history: List[Dict[str, Any]] = None, last_created: tuple = None) -> ChatResponse:
     """Handle resource deletion requests with impact analysis."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.domain.exceptions import PermissionDeniedException
     from src.application.use_cases.delete_resource_use_case import DeleteResourceUseCase
     
     try:
-        repository = get_repository(user_token=user_token)
-        delete_use_case = DeleteResourceUseCase(repository)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
+        delete_use_case = DeleteResourceUseCase(
+            list_repository=list_repository,
+            site_repository=site_repository,
+            page_repository=page_repository,
+            library_repository=library_repository
+        )
         
         message_lower = message.lower()
         message_tokens = set(message_lower.split())
@@ -67,7 +77,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
         # ── Guard: "delete list item" / "delete item from list" must go to item_handler ──
         if ("item" in message_tokens or "items" in message_tokens
                 or "list item" in message_lower or "record" in message_tokens):
-            from src.presentation.api.orchestrators.item_handler import handle_item_operations
+            from src.presentation.api.orchestrators.item_orchestrator import handle_item_operations
             return await handle_item_operations(message, session_id, _delete_site_id, user_token=user_token, last_created=last_created)
 
         # Extract resource to delete
@@ -77,7 +87,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
         
         if "list" in message_lower:
             resource_type = "list"
-            all_lists = await repository.get_all_lists(_delete_site_id)
+            all_lists = await list_repository.get_all_lists(_delete_site_id)
             # Use longest match to avoid picking a shorter name that is a substring of the intended one
             # (e.g. "Announcements" must not win over "Team Announcements")
             # Also try space-compact matching so "Test1" matches when user types "test 1" and vice versa.
@@ -102,7 +112,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
             resource_type = "page"
             # Resolve page ID by searching for the page name in the message
             try:
-                pages = await repository.get_all_pages(site_id=_delete_site_id)
+                pages = await page_repository.get_all_pages(site_id=_delete_site_id)
                 for page in pages:
                     page_name = (page.get("name") or page.get("title") or "").lower().replace(".aspx", "")
                     if page_name and page_name in message_lower:
@@ -115,10 +125,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
             resource_type = "library"
             # Resolve library ID from lists (libraries are lists in Graph API)
             try:
-                if hasattr(repository, "get_all_document_libraries"):
-                    all_libraries = await repository.get_all_document_libraries(site_id=_delete_site_id)
-                else:
-                    all_libraries = await repository.get_all_lists(_delete_site_id)
+                all_libraries = await library_repository.get_all_document_libraries(site_id=_delete_site_id)
                 _msg_compact = message_lower.replace(" ", "")
                 best_match = None
                 best_match_len = 0
@@ -142,12 +149,23 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
             resource_type = "site"
             # Resolve site ID from sites
             try:
-                all_sites = await repository.get_all_sites()
+                all_sites = await site_repository.get_all_sites()
                 for site in all_sites:
-                    site_name = (getattr(site, 'name', None) or site.get("name", "") if isinstance(site, dict) else site.name).lower()
-                    if site_name and site_name in message_lower:
-                        resource_id = getattr(site, 'id', None) or site.get("id") if isinstance(site, dict) else site.id
-                        resource_name = getattr(site, 'name', None) or site.get("name") if isinstance(site, dict) else site.name
+                    if isinstance(site, dict):
+                        site_name_val = site.get("name", "")
+                        site_display_name_val = site.get("displayName", "")
+                        site_id_val = site.get("id")
+                    else:
+                        site_name_val = getattr(site, "name", "")
+                        site_display_name_val = getattr(site, "displayName", "")
+                        site_id_val = getattr(site, "id", None)
+                        
+                    site_name = (site_name_val or "").lower()
+                    site_display = (site_display_name_val or "").lower()
+                    
+                    if (site_name and site_name in message_lower) or (site_display and site_display in message_lower):
+                        resource_id = site_id_val
+                        resource_name = site_display_name_val or site_name_val
                         break
             except Exception:
                 pass
@@ -156,7 +174,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
             # Scan lists using direct + compact name matching to infer the resource.
             try:
                 _msg_compact = message_lower.replace(" ", "")
-                all_lists = await repository.get_all_lists(_delete_site_id)
+                all_lists = await list_repository.get_all_lists(_delete_site_id)
                 best_match = None
                 best_match_len = 0
                 for lst in all_lists:
@@ -197,7 +215,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                     if _hist_type_lower == "page":
                         # Resolve page by name using the repository directly
                         try:
-                            _all_pages = await repository.get_all_pages(site_id=_delete_site_id)
+                            _all_pages = await page_repository.get_all_pages(site_id=_delete_site_id)
                             _hist_compact = hist_name.lower().replace(" ", "").replace(".aspx", "")
                             for _pg in _all_pages:
                                 _pg_name = (_pg.get("name") or _pg.get("title") or "").lower().replace(".aspx", "")
@@ -211,7 +229,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                     elif _hist_type_lower == "site":
                         # Resolve site by its last-created name/displayName.
                         try:
-                            _all_sites = await repository.get_all_sites()
+                            _all_sites = await site_repository.get_all_sites()
                             _hist_lower = hist_name.lower()
                             _hist_compact = _hist_lower.replace(" ", "")
                             _best_site = None
@@ -236,10 +254,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                     elif _hist_type_lower == "library":
                         # Resolve library by name
                         try:
-                            if hasattr(repository, "get_all_document_libraries"):
-                                _all_libs = await repository.get_all_document_libraries(site_id=_delete_site_id)
-                            else:
-                                _all_libs = await repository.get_all_lists(_delete_site_id)
+                            _all_libs = await library_repository.get_all_document_libraries(site_id=_delete_site_id)
                             _hist_compact = hist_name.lower().replace(" ", "")
                             _best_lib = None
                             _best_len = 0
@@ -263,7 +278,7 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                         # Default: try to match the resolved name against actual lists
                         try:
                             _msg_compact2 = hist_name.lower().replace(" ", "")
-                            all_lists2 = await repository.get_all_lists(_delete_site_id)
+                            all_lists2 = await list_repository.get_all_lists(_delete_site_id)
                             best2 = None
                             best2_len = 0
                             for lst in all_lists2:
@@ -282,14 +297,9 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                             pass
 
             if not resource_id or not resource_name:
-                _clarify = (
-                    "⚠️ I’m not sure which resource you’d like to delete — could you be more specific?\n\n"
-                    "Example: 'Delete the Project tracker list' or 'Delete the Home page'"
-                ) if _uses_pronoun else (
-                    "⚠️ Which resource would you like to delete? Please specify the exact name.\n\n"
-                    "Example: 'Delete the Announcements list'"
-                )
-                return ChatResponse(intent="delete", reply=_clarify)
+                # If we couldn't resolve any resource (list, page, library, site), it might be an item!
+                from src.presentation.api.orchestrators.item_orchestrator import handle_item_operations
+                return await handle_item_operations(message, session_id, _delete_site_id, user_token=user_token, last_created=last_created)
         
         # Check if this is a confirmation — accept with or without comma
         # e.g. "yes, delete test1" OR "yes delete test1"

@@ -58,7 +58,7 @@ class ListProvisioner:
                     if sp_list.seed_data:
                         list_id = result.get("id", "")
                         if list_id:
-
+                            columns = []
                             try:
                                 columns = await self.repository.get_list_columns(list_id, site_id=site_id)
                                 # Build lookup: any reasonable variant → internal name

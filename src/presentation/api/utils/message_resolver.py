@@ -15,12 +15,12 @@ FOLLOWUP_RESOLVER_PROMPT = (
     "(e.g., 'tell me about the Milestones list', 'all the lists', 'show me all sites'), "
     "return it UNCHANGED.\n"
     "2. If it references something vaguely (e.g., 'it', 'that', 'the same one', "
-    "'tell me more', 'what about it?'), identify the subject from the USER'S most recent "
-    "prior question — NOT from anything mentioned inside an assistant's answer — and rewrite "
+    "'tell me more', 'what about it?'), identify the subject from the recent conversation "
+    "history (including the assistant's last reply if applicable) and rewrite "
     "the message as a specific standalone question.\n"
-    "3. CRITICAL: The subject of 'it', 'that', 'this', 'them' is ALWAYS the resource the "
-    "USER most recently asked about (in their last user-role message). Ignore all resource "
-    "names that appear only inside assistant replies.\n"
+    "3. CRITICAL: The subject of 'it', 'that', 'this', 'them' is the most recently discussed "
+    "resource or entity in the conversation, whether mentioned by the user or the assistant. "
+    "For example, if the assistant just successfully created a list, 'delete it' refers to that list.\n"
     "4. Keep the rewritten message concise and natural.\n"
     "5. Do NOT add extra information or assumptions beyond what the user's own messages provide.\n"
     "6. Preserve the user's intent exactly — just make it self-contained.\n"
@@ -53,7 +53,7 @@ _CONTEXT_DEPENDENT_WORDS = frozenset([
 ])
 
 
-def _needs_resolution(message: str) -> bool:
+def needs_resolution(message: str) -> bool:
     """Return True only when the message actually depends on prior context."""
     words = set(message.lower().split())
     # Short messages with no context-dependent pronouns can be returned as-is
@@ -74,20 +74,18 @@ def resolve_followup_message(message: str, history: Optional[List[Dict[str, Any]
         return message
 
     # Skip the AI call entirely when the message is already self-contained
-    if not _needs_resolution(message):
+    if not needs_resolution(message):
         logger.debug("Message is self-contained, skipping resolver: '%s'", message)
         return message
 
     try:
         client, model = get_instructor_client()
-        # Pass ONLY user messages to the resolver — assistant replies often mention many
-        # resource names (e.g. quoting list contents) and cause the resolver to pick the
-        # wrong subject. The resolver only needs to know what the USER asked previously.
-        user_messages = [
-            msg for msg in history if msg.get('role') == 'user'
-        ]
+        # Pass recent messages from both user and assistant to establish context.
+        # This is critical for commands like "delete it" right after the assistant
+        # successfully creates a resource.
+        recent_messages = history[-6:] if len(history) >= 6 else history
         history_text = "\n".join(
-            f"user: {msg.get('content', '')}" for msg in user_messages[-6:]
+            f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" for msg in recent_messages
         )
         prompt = (
             f"{FOLLOWUP_RESOLVER_PROMPT}\n\n"

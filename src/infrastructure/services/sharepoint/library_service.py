@@ -114,15 +114,19 @@ class LibraryService:
         data = await self.graph_client.get(endpoint)
         return data
 
-    @handle_sharepoint_errors("update document library")
-    async def update_library_metadata(
-        self, library_id: str, metadata: Dict[str, Any]
+    @handle_sharepoint_errors("update library")
+    async def update_document_library(
+        self,
+        library_id: str,
+        modifications: Dict[str, Any],
+        site_id: str = None
     ) -> Dict[str, Any]:
         """Update document library metadata.
         
         Args:
             library_id: Library ID
-            metadata: Metadata to update (description, settings, etc.)
+            modifications: Metadata to update (description, settings, etc.)
+            site_id: Optional site ID override.
             
         Returns:
             Updated library data
@@ -131,10 +135,10 @@ class LibraryService:
         
         # Build payload for metadata update
         payload = {}
-        if "name" in metadata or "title" in metadata:
-            payload["displayName"] = metadata.get("name") or metadata.get("title")
-        if "description" in metadata:
-            payload["description"] = metadata["description"]
+        if "name" in modifications or "title" in modifications:
+            payload["displayName"] = modifications.get("name") or modifications.get("title")
+        if "description" in modifications:
+            payload["description"] = modifications.get("description")
         
         # Remove None values
         payload = {k: v for k, v in payload.items() if v is not None}

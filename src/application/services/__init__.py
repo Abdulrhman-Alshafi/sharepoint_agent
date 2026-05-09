@@ -1,6 +1,5 @@
 """Application services - orchestrate use cases and coordinate with repositories."""
 
-from src.domain.repositories import SharePointRepository
 from src.domain.services import BlueprintGeneratorService, DataQueryService
 from src.application.use_cases import QueryDataUseCase
 from src.application.use_cases.provision_resources_use_case import ProvisionResourcesUseCase
@@ -14,9 +13,22 @@ class ProvisioningApplicationService:
     def __init__(
         self,
         blueprint_generator: BlueprintGeneratorService,
-        sharepoint_repository: SharePointRepository
+        list_repository=None,
+        page_repository=None,
+        library_repository=None,
+        site_repository=None,
+        permission_repository=None,
+        enterprise_repository=None
     ):
-        self.usecase = ProvisionResourcesUseCase(blueprint_generator, sharepoint_repository)
+        self.usecase = ProvisionResourcesUseCase(
+            blueprint_generator,
+            list_repository=list_repository,
+            page_repository=page_repository,
+            library_repository=library_repository,
+            site_repository=site_repository,
+            permission_repository=permission_repository,
+            enterprise_repository=enterprise_repository
+        )
 
     async def provision_resources(self, prompt: str, skip_high_risk_check: bool = False, skip_collision_check: bool = False, user_email: str = "", user_login_name: str = "", target_site_id: str = "", user_token: str = "") -> ProvisionResourcesResponseDTO:
         """Orchestrate the provisioning of resources.
@@ -37,7 +49,7 @@ class ProvisioningApplicationService:
 class DataQueryApplicationService:
     """Application service for data intelligence operations."""
 
-    def __init__(self, data_query_service: DataQueryService, permission_repository: SharePointRepository = None):
+    def __init__(self, data_query_service: DataQueryService, permission_repository=None):
         self.usecase = QueryDataUseCase(data_query_service, permission_repository=permission_repository)
 
     async def query_data(self, question: str, site_ids=None, page_id=None, page_url=None, page_title=None, context_site_id=None, user_login_name: str = "") -> DataQueryResponseDTO:

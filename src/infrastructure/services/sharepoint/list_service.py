@@ -44,6 +44,13 @@ class ListService:
             created.append(data)
         return created
 
+    @handle_sharepoint_errors("seed list data")
+    async def seed_list_data(self, list_id: str, seed_data: List[Dict[str, Any]], site_id: Optional[str] = None) -> bool:
+        """Seed a SharePoint list with data using batch operations."""
+        from src.infrastructure.services.batch_operations_service import BatchOperationsService
+        batch_service = BatchOperationsService(self.graph_client)
+        return await batch_service.seed_list_data(list_id, seed_data, site_id=site_id)
+
     @handle_sharepoint_errors("batch update list items")
     async def batch_update_items(self, list_id: str, updates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Batch update items in a SharePoint list. Each update dict must include 'id' and fields to update."""
@@ -170,7 +177,7 @@ class ListService:
             List of all lists data
         """
         resolved_site_id = site_id or self.graph_client.site_id
-        endpoint = f"/sites/{resolved_site_id}/lists"
+        endpoint = f"/sites/{resolved_site_id}/lists?$select=id,name,displayName,description,list,webUrl"
         
         logger.info(f"DEBUG: Calling Graph API to get all lists for site: {resolved_site_id}")
         data = await self.graph_client.get(endpoint)
@@ -255,6 +262,22 @@ class ListService:
         data["resource_link"] = data.get("webUrl", "")
         return data
 
+    @handle_sharepoint_errors("get list columns")
+    async def get_list_columns(self, list_id: str, site_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all columns for a list.
+        
+        Args:
+            list_id: SharePoint list ID
+            site_id: Optional site ID override.
+            
+        Returns:
+            List of column data dicts
+        """
+        target_site = site_id or self.graph_client.site_id
+        endpoint = f"/sites/{target_site}/lists/{list_id}/columns"
+        data = await self.graph_client.get(endpoint)
+        return data.get("value", [])
+
     async def _sync_columns(self, list_id: str, columns: List[Any], site_id: str = None) -> None:
         """Synchronize columns with the list (add new, delete removed).
         
@@ -291,7 +314,7 @@ class ListService:
                 try:
                     await self.graph_client.delete(delete_endpoint)
                 except Exception as e:
-                    logger.warning(f"Failed to delete column {ex.get('name')}: {e}")
+                    logger.warning("Failed to delete column %s: %s", ex.get("name"), e, exc_info=True)
 
         # Add new columns
         for col in columns:
@@ -302,7 +325,7 @@ class ListService:
             try:
                 await self.graph_client.post(columns_endpoint, col_payload)
             except Exception as e:
-                logger.warning(f"Failed to add column {col.name}: {e}")
+                logger.warning("Failed to add column %s: %s", col.name, e, exc_info=True)
 
     @handle_sharepoint_errors("delete list")
     async def delete_list(self, list_id: str, site_id: str = None) -> bool:

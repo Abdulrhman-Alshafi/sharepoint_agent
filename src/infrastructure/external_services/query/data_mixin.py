@@ -17,7 +17,8 @@ class DataQueryMixin:
     """Handlers for specific_data and Graph-search fallback.
 
     Requires *self* to provide:
-        self.sharepoint_repository
+        self.list_repository
+        self.site_repository
         self.search_service  – SearchService
         self.client, self.model – instructor AI client
         self._last_list_id, self._last_list_name   – context tracking
@@ -54,7 +55,7 @@ class DataQueryMixin:
             target_list_id,
         )
 
-        items_raw = await self.sharepoint_repository.get_list_items(target_list_id, site_id=site_id)
+        items_raw = await self.list_repository.get_list_items(target_list_id, site_id=site_id)
         items = [item.get("fields", {}) for item in items_raw]
 
         # ── Resolve personOrGroup LookupId fields → display names ─────────
@@ -62,7 +63,7 @@ class DataQueryMixin:
         # which is meaningless to the AI.  Resolve to human-readable names.
         try:
             from src.infrastructure.services.person_field_resolver import resolve_person_fields
-            _columns = await self.sharepoint_repository.get_list_columns(
+            _columns = await self.list_repository.get_list_columns(
                 target_list_id, site_id=site_id
             )
             items = await resolve_person_fields(
@@ -143,8 +144,8 @@ class DataQueryMixin:
             _sib_parts = []
             for _sib in sibling_resources:
                 try:
-                    _sib_items_raw = await self.sharepoint_repository.get_list_items(
-                        _sib.resource_id, site_id=_sib.site_id or site_id
+                    _sib_items_raw = await self.list_repository.get_list_items(
+                        _sib.resource_id, site_id=_sib.site_id
                     )
                     _sib_items = [i.get("fields", {}) for i in _sib_items_raw]
                     _sib_str = str(_sib_items)[:2000]

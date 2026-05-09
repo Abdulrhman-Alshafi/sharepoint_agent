@@ -39,7 +39,7 @@ async def _dispatch_site_operation(operation, session_id: str, site_id: str, rep
 
 async def handle_site_operations(message: str, session_id: str, site_id: str, user_token: str = None, user_login_name: str = "") -> ChatResponse:
     """Handle site operations (create site, add members, navigation, recycle bin, etc.)."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.infrastructure.external_services.site_operation_parser import (
         SiteOperationParserService, SiteOperationBatchParserService,
     )
@@ -47,7 +47,12 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
     import asyncio
     
     try:
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         
         # Parse — may return multiple operations for batch requests
         operations = await SiteOperationBatchParserService.parse(message)
@@ -131,7 +136,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
                 owner_email=""
             )
             
-            result = await repository.create_site(sp_site)
+            result = await site_repository.create_site(sp_site)
             AuditService.record("create_site", "site", operation.site_title, session_id,
                                 details={"webUrl": result.get("webUrl", ""), "template": sp_template})
 
@@ -162,7 +167,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify which site to delete."
                 )
 
-            all_sites = await repository.get_all_sites()
+            all_sites = await site_repository.get_all_sites()
             target_site = None
             for site in all_sites:
                 site_name = site.get("displayName", "").lower()
@@ -198,7 +203,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
 
             # Not yet confirmed — store action and ask
             async def _do_delete_site():
-                return await repository.delete_site(target_site_id)
+                return await site_repository.delete_site(target_site_id)
 
             store_pending_action(session_id, PendingAction(
                 action_type="delete_site",
@@ -228,7 +233,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
             # Use current site or find by name
             target_site_id = site_id
             if operation.site_name:
-                all_sites = await repository.get_all_sites()
+                all_sites = await site_repository.get_all_sites()
                 for site in all_sites:
                     site_name = site.get("displayName", "").lower()
                     if operation.site_name.lower() in site_name or site_name in operation.site_name.lower():
@@ -259,7 +264,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
             
             target_site_id = site_id
             if operation.site_name:
-                all_sites = await repository.get_all_sites()
+                all_sites = await site_repository.get_all_sites()
                 for site in all_sites:
                     site_name = site.get("displayName", "").lower()
                     if operation.site_name.lower() in site_name or site_name in operation.site_name.lower():
@@ -290,7 +295,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
                 )
             
             target_site_id = site_id
-            success = await repository.update_site_theme(target_site_id, operation.theme_settings)
+            success = await site_repository.update_site_theme(target_site_id, operation.theme_settings)
             
             if success:
                 return ChatResponse(
@@ -307,7 +312,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
         elif operation.operation == "navigation":
             if not operation.navigation_items:
                 # Get current navigation
-                nav_items = await repository.get_site_navigation(site_id, operation.navigation_type or "top")
+                nav_items = await site_repository.get_site_navigation(site_id, operation.navigation_type or "top")
                 
                 if not nav_items:
                     return ChatResponse(
@@ -326,7 +331,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
                 )
             else:
                 # Update navigation
-                success = await repository.update_site_navigation(
+                success = await site_repository.update_site_navigation(
                     site_id,
                     operation.navigation_type or "top",
                     operation.navigation_items
@@ -345,7 +350,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
         
         # ── RECYCLE BIN ─────────────────────────────────────
         elif operation.operation == "recycle_bin":
-            items = await repository.get_site_recycle_bin(site_id)
+            items = await site_repository.get_site_recycle_bin(site_id)
             
             if not items:
                 return ChatResponse(
@@ -370,7 +375,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
         elif operation.operation == "empty_recycle_bin":
             # Get item count for the warning message
             try:
-                items = await repository.get_site_recycle_bin(site_id)
+                items = await site_repository.get_site_recycle_bin(site_id)
                 item_count = len(items) if items else 0
             except Exception:
                 item_count = 0
@@ -394,7 +399,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
 
             # Not yet confirmed — store action and ask
             async def _do_empty_bin():
-                return await repository.empty_recycle_bin(site_id)
+                return await site_repository.empty_recycle_bin(site_id)
 
             store_pending_action(session_id, PendingAction(
                 action_type="empty_recycle_bin",
@@ -421,7 +426,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
                     reply="⚠️ Please specify the ID of the item to restore from recycle bin."
                 )
             
-            success = await repository.restore_from_recycle_bin(site_id, operation.recycle_bin_item_id)
+            success = await site_repository.restore_from_recycle_bin(site_id, operation.recycle_bin_item_id)
             
             if success:
                 return ChatResponse(
@@ -438,7 +443,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
         
         # ── GET STORAGE ─────────────────────────────────────
         elif operation.operation == "get_storage":
-            storage_info = await repository.get_site_storage_info(site_id)
+            storage_info = await site_repository.get_site_storage_info(site_id)
             
             used_gb = storage_info.get("used", 0) / (1024**3)
             total_gb = storage_info.get("total", 0) / (1024**3)
@@ -456,7 +461,7 @@ async def handle_site_operations(message: str, session_id: str, site_id: str, us
         
         # ── GET ANALYTICS ───────────────────────────────────
         elif operation.operation == "get_analytics":
-            analytics = await repository.get_site_analytics(site_id)
+            analytics = await site_repository.get_site_analytics(site_id)
             
             return ChatResponse(
                 intent="chat",

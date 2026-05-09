@@ -97,7 +97,10 @@ class GeminiAIBlueprintGenerator(BlueprintGeneratorService):
         """Validate a user prompt before generating a blueprint."""
         try:
             kwargs = {
-                "messages": [{"role": "user", "content": f"{VALIDATION_PROMPT}\n\nUser Request: {prompt}"}],
+                "messages": [
+                    {"role": "system", "content": VALIDATION_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
                 "response_model": ValidationModel,
             }
             if self.model:  # Only pass model for non-Gemini providers
@@ -138,7 +141,8 @@ class GeminiAIBlueprintGenerator(BlueprintGeneratorService):
             
             kwargs = {
                 "messages": [
-                    {"role": "user", "content": f"{full_prompt}\n\nUser Request: {prompt}"}
+                    {"role": "system", "content": full_prompt},
+                    {"role": "user", "content": prompt}
                 ],
                 "response_model": ProvisioningBlueprintModel,
             }

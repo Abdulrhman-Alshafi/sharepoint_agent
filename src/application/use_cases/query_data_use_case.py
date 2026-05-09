@@ -1,11 +1,11 @@
 """Query data use case."""
 
-from typing import List, Optional
+from typing import Optional
 
 from src.domain.services import DataQueryService
 from src.domain.entities.core import SPPermissionMask
 from src.domain.exceptions import PermissionDeniedException
-from src.domain.repositories import SharePointRepository
+from src.domain.repositories.permission_repository import IPermissionRepository
 from src.application.commands import DataQueryCommand
 from src.application.dtos import DataQueryResponseDTO
 
@@ -13,7 +13,7 @@ from src.application.dtos import DataQueryResponseDTO
 class QueryDataUseCase:
     """Use case for querying data intelligence (RAG)."""
 
-    def __init__(self, data_query_service: DataQueryService, permission_repository: SharePointRepository = None):
+    def __init__(self, data_query_service: DataQueryService, permission_repository: Optional[IPermissionRepository] = None):
         self.data_query_service = data_query_service
         self.permission_repository = permission_repository
 

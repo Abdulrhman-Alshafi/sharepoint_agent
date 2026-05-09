@@ -3,20 +3,18 @@
 from typing import Dict, Any
 from src.domain.entities.preview import ProvisioningPreview, ResourceChange, OperationType, RiskLevel
 from src.domain.entities.core import SPPermissionMask, SPList, ActionType
-from src.domain.repositories import SharePointRepository
 from src.domain.value_objects import SPColumn
 
 
 class UpdateResourceUseCase:
     """Update existing SharePoint resources with preview support."""
     
-    def __init__(self, repository: SharePointRepository):
-        """Initialize use case.
-        
-        Args:
-            repository: List repository for list read/update operations
-        """
-        self.repository = repository
+    def __init__(self, list_repository=None, page_repository=None, library_repository=None, site_repository=None):
+        """Initialize use case with specific repositories."""
+        self.list_repository = list_repository
+        self.page_repository = page_repository
+        self.library_repository = library_repository
+        self.site_repository = site_repository
     
     async def execute(self, resource_type: str, site_id: str, resource_id: str, 
                       modifications: Dict[str, Any], preview_only: bool = True,
@@ -41,13 +39,24 @@ class UpdateResourceUseCase:
             raise PermissionDeniedException(
                 "No user identity provided. Authentication is required to update resources."
             )
-        has_perms = await self.repository.check_user_permission(
-            user_email, SPPermissionMask.MANAGE_LISTS
-        )
-        if not has_perms:
-            raise PermissionDeniedException(
-                f"User '{user_email}' does not have sufficient SharePoint permissions (ManageLists) to update this resource."
-            )
+        
+        # Check permissions using the appropriate repository
+        repo = None
+        if resource_type == "list" and self.list_repository:
+            repo = self.list_repository
+        elif resource_type == "page" and self.page_repository:
+            repo = self.page_repository
+        elif resource_type == "library" and self.library_repository:
+            repo = self.library_repository
+        elif resource_type == "site" and self.site_repository:
+            repo = self.site_repository
+            
+        if repo and hasattr(repo, "check_user_permission"):
+            has_perms = await repo.check_user_permission(user_email, SPPermissionMask.MANAGE_LISTS)
+            if not has_perms:
+                raise PermissionDeniedException(
+                    f"User '{user_email}' does not have sufficient SharePoint permissions (ManageLists) to update this resource."
+                )
 
         # Generate preview
         preview = await self._generate_update_preview(resource_type, site_id, resource_id, modifications)
@@ -72,7 +81,7 @@ class UpdateResourceUseCase:
         """Generate preview of update operation."""
         # Fetch current state
         if resource_type == "list":
-            sp_list_entity = await self.repository.get_list(resource_id, site_id)
+            sp_list_entity = await self.list_repository.get_list(resource_id, site_id)
             current = {
                 "displayName": sp_list_entity.title,
                 "description": sp_list_entity.description,
@@ -122,13 +131,15 @@ class UpdateResourceUseCase:
                 action=ActionType.UPDATE,
                 list_id=resource_id,
             )
-            return await self.repository.update_list(resource_id, sp_list_entity, site_id)
+            return await self.list_repository.update_list(resource_id, sp_list_entity, site_id=site_id)
         elif resource_type == "page":
-            return await self.repository.update_page_content(resource_id, modifications)
+            from src.domain.entities import SPPage
+            sp_page = SPPage(title=modifications.get("title", modifications.get("displayName", "")), page_id=resource_id)
+            return await self.page_repository.update_page_content(resource_id, sp_page, site_id=site_id)
         elif resource_type == "library":
-            return await self.repository.update_document_library(resource_id, modifications, site_id)
+            return await self.library_repository.update_document_library(resource_id, modifications, site_id=site_id)
         elif resource_type == "site":
-            return await self.repository.update_site(resource_id, modifications)
+            return await self.site_repository.update_site(resource_id, modifications)
         else:
             raise ValueError(f"Unsupported resource_type for update: '{resource_type}'.")
     

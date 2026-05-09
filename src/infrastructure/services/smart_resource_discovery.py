@@ -19,7 +19,6 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from src.domain.repositories import SharePointRepository
 from src.domain.services.smart_resource_discovery import ISmartResourceDiscoveryService
 from src.domain.value_objects.resource_candidate import ResourceCandidate
 from src.infrastructure.config import settings
@@ -97,17 +96,26 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
 
     def __init__(
         self,
-        sharepoint_repository: SharePointRepository,
+        site_repository,
+        list_repository,
+        library_repository,
+        page_repository,
         ai_client=None,
         ai_model: Optional[str] = None,
     ):
         """Initialise the service.
 
         Args:
-            sharepoint_repository: Repository used for Graph API calls.
+            site_repository: Repository for site operations.
+            list_repository: Repository for list operations.
+            library_repository: Repository for library operations.
+            page_repository: Repository for page operations.
             ai_model:     Model string forwarded to the AI client when calling.
         """
-        self._repo = sharepoint_repository
+        self._site_repo = site_repository
+        self._list_repo = list_repository
+        self._library_repo = library_repository
+        self._page_repo = page_repository
         self._ai_client = ai_client
         self._ai_model = ai_model
 
@@ -128,7 +136,7 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
         # Build site info cache: site_id → {name, url}
         site_info_map: Dict[str, Dict[str, str]] = {}
         try:
-            all_sites = await self._repo.get_all_sites()
+            all_sites = await self._site_repo.get_all_sites()
             for s in all_sites:
                 site_info_map[s.get("id", "")] = {
                     "name": s.get("displayName") or s.get("name", "Unknown"),
@@ -152,7 +160,7 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
 
             # ── Lists ──────────────────────────────────────────────────
             try:
-                lists = await self._repo.get_all_lists(site_id=site_id)
+                lists = await self._list_repo.get_all_lists(site_id=site_id)
                 for lst in lists:
                     # Skip built-in system lists (hidden flag)
                     if lst.get("list", {}).get("hidden", False):
@@ -173,7 +181,7 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
 
             # ── Document libraries ─────────────────────────────────────
             try:
-                libraries = await self._repo.get_all_document_libraries(site_id=site_id)
+                libraries = await self._library_repo.get_all_document_libraries(site_id=site_id)
                 for lib in libraries:
                     if lib.get("list", {}).get("hidden", False):
                         continue
@@ -193,7 +201,7 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
 
             # ── Pages ──────────────────────────────────────────────────
             try:
-                pages = await self._repo.get_all_pages(site_id=site_id)
+                pages = await self._page_repo.get_all_pages(site_id=site_id)
                 for page in pages:
                     page_id = page.get("id") or page.get("eTag", "").strip('"')
                     if not page_id:
@@ -391,9 +399,14 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
         # ── Pass 2.5 — Section-level keyword boost ────────────────────────────
         try:
             _sec_idx = SectionIndexService()
-            _sec_hits = await _sec_idx.search_sections_keyword(question, limit=20)
-            if _sec_hits:
-                _boosted_ids = {s.get("page_id") for s in _sec_hits if s.get("page_id")}
+            _boosted_ids = set()
+            _unique_sites = {c.site_id for c in top5 if c.site_id}
+            for sid in _unique_sites:
+                _sec_hits = await _sec_idx.search_sections_keyword(question, sid, top_k=20)
+                if _sec_hits:
+                    _boosted_ids.update(s.get("page_id") for s in _sec_hits if s.get("page_id"))
+            
+            if _boosted_ids:
                 top5 = [
                     ResourceCandidate(
                         resource_id=c.resource_id,
@@ -505,7 +518,7 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
         column_names: List[str] = []
         try:
             if candidate.resource_type == "list":
-                columns = await self._repo.get_list_columns(
+                columns = await self._list_repo.get_list_columns(
                     candidate.resource_id, site_id=candidate.site_id
                 )
                 column_names = [
@@ -514,7 +527,7 @@ class SmartResourceDiscoveryService(ISmartResourceDiscoveryService):
                     if not c.get("hidden", False)
                 ]
             else:  # library
-                schema = await self._repo.get_library_schema(
+                schema = await self._library_repo.get_library_schema(
                     candidate.resource_id, site_id=candidate.site_id
                 )
                 column_names = [

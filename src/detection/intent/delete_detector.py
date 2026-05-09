@@ -133,7 +133,7 @@ def detect_delete_intent(text: str) -> DetectionResult:
 
     # ── Layer 7: confirmation or pronoun ──────────────────────────────────
     if not scores:
-        is_confirm = "yes," in text_lower or text_lower.startswith("yes ")
+        is_confirm = any(c in text_lower for c in ("yes,", "yess,", "yep,", "yeah,")) or any(text_lower.startswith(c) for c in ("yes ", "yess ", "yep ", "yeah "))
         has_pronoun = bool(tokens & _PRONOUN_REF)
         if is_confirm:
             # Explicit confirmation ("yes, delete X") — keep as resource-delete
@@ -146,10 +146,10 @@ def detect_delete_intent(text: str) -> DetectionResult:
             layer_hit = "pronoun_item"
             matched = gate_matched
 
-    # ── Layer 8: default — no resource word present → treat as item delete ─
+    # ── Layer 8: default — no resource word present → route to delete orchestrator ─
     if not scores:
-        scores["item_operation"] = WEIGHT_CONTEXTUAL
-        layer_hit = "default_item"
+        scores["delete"] = WEIGHT_CONTEXTUAL
+        layer_hit = "default_delete"
         matched = gate_matched
 
     selected = max(scores, key=scores.get) if scores else None

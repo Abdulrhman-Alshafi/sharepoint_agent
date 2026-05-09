@@ -13,7 +13,6 @@ import re as _re
 
 from src.domain.entities import DataQueryResult
 from src.domain.services import DataQueryService
-from src.domain.repositories import SharePointRepository
 from src.domain.exceptions import DataQueryException
 from src.infrastructure.external_services.ai_client_factory import get_instructor_client
 from src.infrastructure.schemas.query_schemas import (
@@ -90,14 +89,22 @@ class AIDataQueryService(
 
     def __init__(
         self,
-        sharepoint_repository: SharePointRepository,
+        site_repository,
+        list_repository,
+        library_repository,
+        page_repository,
+        drive_repository,
         graph_client,
         site_id: str,
         smart_discovery_service=None,
         ai_client=None,
         ai_model: Optional[str] = None,
     ):
-        self.sharepoint_repository = sharepoint_repository
+        self.site_repository = site_repository
+        self.list_repository = list_repository
+        self.library_repository = library_repository
+        self.page_repository = page_repository
+        self.drive_repository = drive_repository
         self.graph_client = graph_client
         self.site_id = site_id
         self.search_service = SearchService(graph_client)
@@ -222,7 +229,7 @@ class AIDataQueryService(
                 logger.debug("Multi-hop detection skipped (non-fatal): %s", _mh_exc)
 
             # Step 2: Get all sites for site resolution.
-            all_sites = await self.sharepoint_repository.get_all_sites()
+            all_sites = await self.site_repository.get_all_sites()
 
             # Step 3: Try deterministic site extraction
             # If context_site_id is provided, use it directly without SiteResolver
@@ -281,7 +288,7 @@ class AIDataQueryService(
                         extracted_site_name = None
 
             # Step 4: Fetch lists for the resolved/default site
-            all_lists = await self.sharepoint_repository.get_all_lists(site_id=target_site_id)
+            all_lists = await self.list_repository.get_all_lists(site_id=target_site_id)
             if not all_lists:
                 site_context = f" in the {target_site_name} site" if target_site_name else ""
                 return DataQueryResult(
@@ -345,7 +352,7 @@ class AIDataQueryService(
                         "Router detected site '%s', resolved to %s",
                         route.site_name, target_site_name,
                     )
-                    all_lists = await self.sharepoint_repository.get_all_lists(site_id=target_site_id)
+                    all_lists = await self.list_repository.get_all_lists(site_id=target_site_id)
                     list_summaries = [
                         {
                             "id": lst.get("id"),
@@ -466,7 +473,7 @@ class AIDataQueryService(
 
                 try:
                     if route.search_query:
-                        pages = await self.sharepoint_repository.search_pages(
+                        pages = await self.page_repository.search_pages(
                             route.search_query, site_id=target_site_id
                         )
                         answer = f"Found **{len(pages)}** {'page' if len(pages) == 1 else 'pages'} matching '{route.search_query}':\n\n"
@@ -475,7 +482,7 @@ class AIDataQueryService(
                         )
                         suggested = ["Show me all pages", "Show me details for a specific page"]
                     else:
-                        pages = await self.sharepoint_repository.get_all_pages(site_id=target_site_id)
+                        pages = await self.page_repository.get_all_pages(site_id=target_site_id)
                         answer = f"There are **{len(pages)}** {'page' if len(pages) == 1 else 'pages'} in this site.\n\n"
                         answer += "\n".join(
                             f"- **{p.get('title', p.get('name', 'Untitled'))}**" for p in pages
@@ -531,7 +538,7 @@ class AIDataQueryService(
             if route.intent == QueryIntent.LIBRARY_CONTENT:
                 if route.library_names:
                     library_name = route.library_names[0]
-                    all_libs = await self.sharepoint_repository.get_all_document_libraries(
+                    all_libs = await self.library_repository.get_all_document_libraries(
                         site_id=target_site_id
                     )
                     matched_lib = next(
@@ -556,7 +563,7 @@ class AIDataQueryService(
                 library_name = None
                 if route.library_names:
                     library_name = route.library_names[0]
-                    all_libs = await self.sharepoint_repository.get_all_document_libraries(
+                    all_libs = await self.library_repository.get_all_document_libraries(
                         site_id=target_site_id
                     )
                     matched_lib = next(
@@ -578,7 +585,7 @@ class AIDataQueryService(
             elif route.intent == QueryIntent.CONTENT_SUMMARY:
                 if route.library_names:
                     library_name = route.library_names[0]
-                    all_libs = await self.sharepoint_repository.get_all_document_libraries(
+                    all_libs = await self.library_repository.get_all_document_libraries(
                         site_id=target_site_id
                     )
                     matched_lib = next(

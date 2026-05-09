@@ -129,13 +129,11 @@ class Settings(BaseSettings):
                 "API_KEY is no longer supported. Production requires Azure AD JWT tokens only. "
                 "Please remove API_KEY from your .env file."
             )
-        # Warn if no tenant allowlist is configured
+        # Ensure tenant allowlist is configured
         if not self.ALLOWED_SHAREPOINT_TENANTS:
-            import logging as _log
-            _log.getLogger(__name__).warning(
-                "ALLOWED_SHAREPOINT_TENANTS is not set. CORS will allow all "
-                "*.sharepoint.com subdomains. Set this to your tenant name(s) "
-                "for stricter origin validation."
+            raise ValueError(
+                "ALLOWED_SHAREPOINT_TENANTS is not set. You must explicitly configure "
+                "your SharePoint tenant name(s) for secure CORS validation."
             )
         return self
 

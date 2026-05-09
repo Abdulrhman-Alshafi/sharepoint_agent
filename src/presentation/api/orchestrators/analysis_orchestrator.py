@@ -15,22 +15,27 @@ _PERMISSION_DENIED_REPLY = (
 
 async def handle_analysis_operations(message: str, site_id: str, provisioning_service: ProvisioningApplicationService, history: list = None, user_token: str = None, user_login_name: str = "", user_email: str = "") -> ChatResponse:
     """Handle content analysis requests."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.application.use_cases.analyze_content_use_case import AnalyzeContentUseCase
     from src.infrastructure.services.content_analyzer import ContentAnalyzerService
     
     try:
         # Get repository — use OBO (per-user) instance when user token is present
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         
         # Initialize content analyzer with required dependencies
         from src.infrastructure.services.sharepoint.list_service import ListService
         from src.infrastructure.services.sharepoint.page_service import PageService
         from src.infrastructure.services.sharepoint.library_service import LibraryService
         
-        # Get clients from provisioning service
-        graph_client = repository.graph_client
-        rest_client = repository.rest_client
+        # Get clients from site_repository
+        graph_client = site_repository.graph_client
+        rest_client = site_repository.rest_client
         
         # Create service instances
         list_service = ListService(graph_client)
@@ -45,7 +50,7 @@ async def handle_analysis_operations(message: str, site_id: str, provisioning_se
             library_service=library_service
         )
         
-        analyze_use_case = AnalyzeContentUseCase(content_analyzer, permission_repository=repository)
+        analyze_use_case = AnalyzeContentUseCase(content_analyzer, permission_repository=permission_repository)
         
         user_identity = user_login_name or user_email
         
@@ -57,7 +62,7 @@ async def handle_analysis_operations(message: str, site_id: str, provisioning_se
         # ── Step 1: always try to match a list/library name from the message ──
         # This handles messages like "more about Events list" or
         # "more about SalaryDocuments" where the resource name is explicit.
-        all_lists = await repository.get_all_lists(site_id)
+        all_lists = await list_repository.get_all_lists(site_id)
         non_hidden = [lst for lst in all_lists if not lst.get("list", {}).get("hidden", False)]
 
         best_match = None

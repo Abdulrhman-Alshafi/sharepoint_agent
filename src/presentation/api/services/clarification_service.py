@@ -102,7 +102,7 @@ async def resolve_search_hint(
 
     Returns a ChatResponse or None if resolution failed.
     """
-    from src.presentation.api import get_repository, ServiceContainer
+    from src.presentation.api import ServiceContainer, get_site_repository, get_list_repository, get_library_repository, get_page_repository, get_drive_repository
     from src.infrastructure.external_services.ai_data_query_service import AIDataQueryService
     from src.infrastructure.services.smart_resource_discovery import SmartResourceDiscoveryService
     from src.application.services import DataQueryApplicationService
@@ -117,8 +117,8 @@ async def resolve_search_hint(
 
     try:
         if raw_token:
-            _hint_repo = get_repository(user_token=raw_token)
-            all_sites = await _hint_repo.get_all_sites()
+            _hint_site_repo = get_site_repository(user_token=raw_token)
+            all_sites = await _hint_site_repo.get_all_sites()
             _hint_tokens = set(re.findall(r"[a-z0-9]+", low))
             best_site = None
             best_score = 0
@@ -141,17 +141,25 @@ async def resolve_search_hint(
 
     try:
         if raw_token:
-            _hint_repo = get_repository(user_token=raw_token)
-            _hint_graph = getattr(_hint_repo, "graph_client", None)
+            _hint_site_repo = get_site_repository(user_token=raw_token)
+            _hint_list_repo = get_list_repository(user_token=raw_token)
+            _hint_library_repo = get_library_repository(user_token=raw_token)
+            _hint_page_repo = get_page_repository(user_token=raw_token)
+            _hint_drive_repo = get_drive_repository(user_token=raw_token)
+            _hint_graph = getattr(_hint_site_repo, "graph_client", None)
             _hint_ai_client, _hint_ai_model = ServiceContainer.get_ai_client()
             _hint_discovery = SmartResourceDiscoveryService(
-                sharepoint_repository=_hint_repo,
+                site_repository=_hint_site_repo,
+                list_repository=_hint_list_repo,
+                library_repository=_hint_library_repo,
+                page_repository=_hint_page_repo,
                 ai_client=_hint_ai_client,
                 ai_model=_hint_ai_model,
             )
             _hint_qsvc = DataQueryApplicationService(
                 AIDataQueryService(
-                    _hint_repo, _hint_graph, target_site_id or default_site_id,
+                    _hint_site_repo, _hint_list_repo, _hint_library_repo, _hint_page_repo, _hint_drive_repo,
+                    _hint_graph, target_site_id or default_site_id,
                     smart_discovery_service=_hint_discovery,
                     ai_client=_hint_ai_client,
                     ai_model=_hint_ai_model,

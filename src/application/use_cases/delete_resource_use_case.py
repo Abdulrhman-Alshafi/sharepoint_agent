@@ -3,7 +3,6 @@
 from typing import Dict, Any, List
 from src.domain.entities.preview import DeletionImpact, RiskLevel
 from src.domain.entities.core import SPPermissionMask
-from src.domain.repositories import SharePointRepository
 from src.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
@@ -12,13 +11,12 @@ logger = get_logger(__name__)
 class DeleteResourceUseCase:
     """Delete SharePoint resources with safety checks and impact analysis."""
     
-    def __init__(self, repository: SharePointRepository):
-        """Initialize use case.
-        
-        Args:
-            repository: SharePoint repository
-        """
-        self.repository = repository
+    def __init__(self, list_repository=None, site_repository=None, page_repository=None, library_repository=None):
+        """Initialize use case with specific repositories."""
+        self.list_repository = list_repository
+        self.site_repository = site_repository
+        self.page_repository = page_repository
+        self.library_repository = library_repository
     
     async def execute(self, resource_type: str, site_id: str, resource_id: str, 
                       resource_name: str, confirmed: bool = False,
@@ -44,8 +42,22 @@ class DeleteResourceUseCase:
             raise PermissionDeniedException(
                 "No user identity provided. Authentication is required to delete resources."
             )
+        # Select appropriate repository for permission check
+        repo = None
+        if resource_type == "site" and self.site_repository:
+            repo = self.site_repository
+        elif resource_type == "list" and self.list_repository:
+            repo = self.list_repository
+        elif resource_type == "page" and self.page_repository:
+            repo = self.page_repository
+        elif resource_type == "library" and self.library_repository:
+            repo = self.library_repository
+
         required_mask = SPPermissionMask.MANAGE_WEB if resource_type == "site" else SPPermissionMask.MANAGE_LISTS
-        has_perms = await self.repository.check_user_permission(user_identity, required_mask)
+        has_perms = True
+        if repo and hasattr(repo, "check_user_permission"):
+            has_perms = await repo.check_user_permission(user_identity, required_mask)
+        
         if not has_perms:
             raise PermissionDeniedException(
                 f"User '{user_identity}' does not have sufficient SharePoint permissions ({required_mask.value}) to delete this resource."
@@ -79,9 +91,9 @@ class DeleteResourceUseCase:
         reversibility = "reversible"
         data_loss_summary = ""
         
-        if resource_type == "list":
+        if resource_type == "list" and self.list_repository:
             try:
-                list_info = await self.repository.get_list(resource_id, site_id)
+                list_info = await self.list_repository.get_list(resource_id, site_id)
                 if list_info:
                     item_count = list_info.item_count
                     data_loss_summary = f"{item_count} list items will be moved to recycle bin"
@@ -122,14 +134,14 @@ class DeleteResourceUseCase:
     async def _execute_deletion(self, resource_type: str, site_id: str, resource_id: str) -> bool:
         """Execute the deletion operation."""
         try:
-            if resource_type == "site":
-                return await self.repository.delete_site(resource_id)
-            elif resource_type == "list":
-                return await self.repository.delete_list(resource_id, site_id)
-            elif resource_type == "page":
-                return await self.repository.delete_page(resource_id)
-            elif resource_type == "library":
-                return await self.repository.delete_document_library(resource_id, site_id=site_id)
+            if resource_type == "site" and self.site_repository:
+                return await self.site_repository.delete_site(resource_id)
+            elif resource_type == "list" and self.list_repository:
+                return await self.list_repository.delete_list(resource_id, site_id)
+            elif resource_type == "page" and self.page_repository:
+                return await self.page_repository.delete_page(resource_id)
+            elif resource_type == "library" and self.library_repository:
+                return await self.library_repository.delete_document_library(resource_id, site_id=site_id)
             else:
                 from src.domain.exceptions import SharePointProvisioningException
                 raise SharePointProvisioningException(f"Deletion not supported for type: {resource_type}")

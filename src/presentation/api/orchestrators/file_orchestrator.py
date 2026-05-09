@@ -14,7 +14,7 @@ _PERMISSION_DENIED_REPLY = (
 
 async def handle_file_operations(message: str, session_id: str, site_id: str, user_token: str = None, user_login_name: str = "", last_created: tuple = None) -> ChatResponse:
     """Handle file operations (upload, download, copy, move, delete)."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_drive_repository, get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.infrastructure.external_services.file_operation_parser import FileOperationParserService
     from src.application.use_cases.file_operations_use_case import FileOperationsUseCase
     from src.infrastructure.services.document_parser import DocumentParserService
@@ -23,7 +23,13 @@ async def handle_file_operations(message: str, session_id: str, site_id: str, us
     
     try:
         # Use OBO (per-user) repository when token is present
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        drive_repository = get_drive_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         parser_service = DocumentParserService()
         index_service = DocumentIndexService()
         intelligence_service = DocumentIntelligenceService()
@@ -48,7 +54,7 @@ async def handle_file_operations(message: str, session_id: str, site_id: str, us
             )
         
         # Find the library by name
-        all_libraries = await repository.get_all_document_libraries(site_id=_file_site_id)
+        all_libraries = await library_repository.get_all_document_libraries(site_id=_file_site_id)
         source_library = None
         dest_library = None
         
@@ -131,7 +137,7 @@ async def handle_file_operations(message: str, session_id: str, site_id: str, us
                 )
             
             # Copy the file
-            result = await repository.copy_file(
+            result = await drive_repository.copy_file(
                 source_drive_id=target_file.get('drive_id'),
                 source_file_id=target_file.get('file_id'),
                 destination_drive_id=dest_library.get('id'),
@@ -175,7 +181,7 @@ async def handle_file_operations(message: str, session_id: str, site_id: str, us
                     )
                 
                 # Move the file
-                result = await repository.move_file(
+                result = await drive_repository.move_file(
                     drive_id=target_file.get('drive_id'),
                     file_id=target_file.get('file_id'),
                     destination_folder_id=dest_library.get('id') if dest_library else None,

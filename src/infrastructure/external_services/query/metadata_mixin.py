@@ -20,7 +20,9 @@ class MetadataQueryMixin:
     """Handlers for metadata_count, filtered_meta, full_meta, site info, and all-sites queries.
 
     Requires *self* to provide:
-        self.sharepoint_repository
+        self.site_repository
+        self.list_repository
+        self.page_repository
     """
 
     async def _handle_metadata_count(
@@ -79,7 +81,7 @@ class MetadataQueryMixin:
 
         elif count_target == "pages":
             try:
-                pages = await self.sharepoint_repository.get_all_pages(site_id=site_id)
+                pages = await self.page_repository.get_all_pages(site_id=site_id)
                 count = len(pages)
                 label = "pages" if count != 1 else "page"
                 answer = f"There are **{count}** {label}{site_context}."
@@ -227,6 +229,9 @@ class MetadataQueryMixin:
             answer=answer,
             data_summary={"count": len(resources), "filtered": bool(route.filter_keywords)},
             suggested_actions=suggested_actions,
+            source_site_name=site_name,
+            source_site_url=site_url,
+            source_site_id=site_id,
         )
 
     async def _handle_full_meta(
@@ -272,7 +277,7 @@ class MetadataQueryMixin:
         pages = []
         if site_id:
             try:
-                pages = await self.sharepoint_repository.get_all_pages(site_id=site_id)
+                pages = await self.page_repository.get_all_pages(site_id=site_id)
             except Exception as _pe:
                 logger.debug("Could not fetch pages for full meta: %s", _pe)
         if pages:
@@ -318,6 +323,9 @@ class MetadataQueryMixin:
             answer=answer,
             data_summary={"total": total, "lists": len(custom_lists), "libraries": len(libraries), "pages": len(pages)},
             suggested_actions=suggested_actions,
+            source_site_name=site_name,
+            source_site_url=site_url,
+            source_site_id=site_id,
         )
 
     async def _handle_site_info_query(self, question: str) -> DataQueryResult:
@@ -346,7 +354,7 @@ class MetadataQueryMixin:
     async def _handle_all_sites_query(self) -> DataQueryResult:
         """Handle queries asking for all sites in the organization."""
         try:
-            all_sites = await self.sharepoint_repository.get_all_sites()
+            all_sites = await self.site_repository.get_all_sites()
             if not all_sites:
                 return DataQueryResult(
                     answer=(

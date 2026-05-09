@@ -8,11 +8,16 @@ logger = get_logger(__name__)
 
 async def handle_enterprise_operations(message: str, session_id: str, site_id: str, user_token: str = None, user_login_name: str = "") -> ChatResponse:
     """Handle enterprise SharePoint operations (content types, term sets, views)."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.infrastructure.external_services.enterprise_operation_parser import EnterpriseOperationParserService
     
     try:
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         
        # Parse the operation using AI
         operation = await EnterpriseOperationParserService.parse_enterprise_operation(message)
@@ -147,7 +152,7 @@ async def handle_enterprise_operations(message: str, session_id: str, site_id: s
                 )
             
             # Find the list
-            all_lists = await repository.get_all_lists(site_id=site_id)
+            all_lists = await list_repository.get_all_lists(site_id=site_id)
             target_list = None
             for lst in all_lists:
                 list_name = lst.get("displayName", "").lower()
@@ -180,7 +185,7 @@ async def handle_enterprise_operations(message: str, session_id: str, site_id: s
                 )
             
             # Find the list
-            all_lists = await repository.get_all_lists(site_id=site_id)
+            all_lists = await list_repository.get_all_lists(site_id=site_id)
             target_list = None
             for lst in all_lists:
                 list_name = lst.get("displayName", "").lower()

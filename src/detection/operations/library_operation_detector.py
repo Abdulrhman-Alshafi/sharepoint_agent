@@ -15,8 +15,7 @@ from src.detection.base import (
 logger = logging.getLogger(__name__)
 
 _LIBRARY_EXPLICIT_PHRASES = (
-    "create library", "new library", "add library", "document library",
-    "create document library", "new document library",
+    "document library",
     "show libraries", "show all libraries", "list libraries",
     "show me libraries", "show me all libraries",
     "delete library", "remove library",

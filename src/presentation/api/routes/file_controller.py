@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from src.infrastructure.rate_limiter import limiter
 from src.presentation.api.dependencies import get_current_user
-from src.presentation.api import get_repository
+from src.presentation.api import get_drive_repository, get_permission_repository
 from src.application.use_cases.file_operations_use_case import FileOperationsUseCase
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ async def query_files(
 ) -> Dict[str, Any]:
     """Query and filter files via natural language."""
     raw_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
-    repo = get_repository(user_token=raw_token)
-    use_case = FileOperationsUseCase(repo)
+    drive_repo = get_drive_repository(user_token=raw_token)
+    perm_repo = get_permission_repository(user_token=raw_token)
+    use_case = FileOperationsUseCase(drive_repo, perm_repo)
     return await use_case.query_files(body.site_id, body.library_id, body.query)

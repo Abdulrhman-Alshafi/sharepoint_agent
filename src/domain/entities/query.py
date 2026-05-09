@@ -22,6 +22,7 @@ class DataQueryResult:
     resource_link: str = ""
     suggested_actions: List[str] = field(default_factory=list)
     # Site-context fields (populated whenever a specific resource is queried)
+    source_site_id: str = ""
     source_site_name: str = ""
     source_site_url: str = ""
     source_resource_type: str = ""  # "list" | "library" | ""

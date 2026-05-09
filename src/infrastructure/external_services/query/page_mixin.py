@@ -28,7 +28,7 @@ class PageQueryMixin:
     """Handler for page_content queries — reads SharePoint page web parts.
 
     Requires *self* to provide:
-        self.sharepoint_repository  – SharePointRepository
+        self.page_repository        – PageRepository
         self.graph_client           – authenticated Graph client
         self.site_id                – default site ID
         self.client, self.model     – instructor AI client
@@ -70,7 +70,7 @@ class PageQueryMixin:
 
         # ── Step 1: Get all page metadata ────────────────────────────────────
         try:
-            all_pages = await self.sharepoint_repository.get_all_pages(
+            all_pages = await self.page_repository.get_all_pages(
                 site_id=effective_site_id
             )
         except Exception as exc:

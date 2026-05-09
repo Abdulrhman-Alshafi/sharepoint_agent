@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 
 from src.infrastructure.rate_limiter import limiter
 from src.infrastructure.config import settings
-from src.presentation.api import get_provisioning_service, get_data_query_service, get_intent_classifier, ServiceContainer, get_repository
+from src.presentation.api import get_provisioning_service, get_data_query_service, get_intent_classifier, ServiceContainer, get_library_repository, get_drive_repository
 from src.presentation.api.dependencies import get_current_user
 from src.infrastructure.services.user_status_service import require_active_user
 from src.presentation.api.schemas.chat_schemas import ChatRequest, ChatResponse
@@ -79,9 +79,9 @@ async def chat_upload(
         )
 
     # 4. Fetch libraries
-    repo = get_repository(user_token=raw_token)
+    library_repo = get_library_repository(user_token=raw_token)
     try:
-        libraries = await repo.get_all_document_libraries()
+        libraries = await library_repo.get_all_document_libraries()
     except Exception as lib_err:
         logger.error("chat_upload: failed to list libraries: %s", lib_err)
         libraries = []
@@ -111,7 +111,8 @@ async def chat_upload(
         lib_name = target_library.get("displayName") or target_library.get("name", "Library")
         
         from src.presentation.api.services.upload_service import execute_uploads
-        success_lines, fail_lines, last_url = await execute_uploads(validated_files, lib_id, lib_name, repo)
+        drive_repo = get_drive_repository(user_token=raw_token)
+        success_lines, fail_lines, last_url = await execute_uploads(validated_files, lib_id, lib_name, drive_repo)
         
         if success_lines:
             reply_msg = format_upload_response(success_lines, fail_lines, lib_name, pre_errors=errors)
@@ -179,9 +180,9 @@ async def chat(
                     reply="⏰ The file(s) you uploaded earlier have expired. Please attach the file(s) again.",
                 )
                 
-            repo = get_repository(user_token=raw_token, site_id=site_id)
+            library_repo = get_library_repository(user_token=raw_token, site_id=site_id)
             try:
-                libraries = await repo.get_all_document_libraries(site_id=site_id)
+                libraries = await library_repo.get_all_document_libraries(site_id=site_id)
             except Exception:
                 libraries = []
                 
@@ -202,7 +203,8 @@ async def chat(
             lib_name = target.get("displayName") or target.get("name", "Library") if target else "Library"
             
             from src.presentation.api.services.upload_service import execute_uploads
-            success_lines, fail_lines, last_url = await execute_uploads(pending_files, lib_id, lib_name, repo)
+            drive_repo = get_drive_repository(user_token=raw_token, site_id=site_id)
+            success_lines, fail_lines, last_url = await execute_uploads(pending_files, lib_id, lib_name, drive_repo)
             await conversation_state.remove_pending_files(body.pending_file_id)
             
             reply_msg = format_upload_response(success_lines, fail_lines, lib_name)

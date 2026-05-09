@@ -15,12 +15,14 @@ class FileOperationsUseCase:
 
     def __init__(
         self,
-        sharepoint_repository: ILibraryRepository,
+        drive_repository,
+        permission_repository,
         document_parser: DocumentParserService,
         document_index: DocumentIndexService,
         document_intelligence: DocumentIntelligenceService
     ):
-        self.sharepoint_repository = sharepoint_repository
+        self.drive_repository = drive_repository
+        self.permission_repository = permission_repository
         self.document_parser = document_parser
         self.document_index = document_index
         self.document_intelligence = document_intelligence
@@ -38,11 +40,13 @@ class FileOperationsUseCase:
         """Upload a file to a document library with automatic parsing and indexing."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to upload files.")
-        has_perms = await self.sharepoint_repository.check_user_permission(user_login, SPPermissionMask.ADD_LIST_ITEMS)
-        if not has_perms:
-            raise PermissionDeniedException(f"User '{user_login}' does not have permission to upload files to this library.")
+        if self.permission_repository:
+            has_perms = await self.permission_repository.check_user_permission(user_login, SPPermissionMask.ADD_LIST_ITEMS)
+            if not has_perms:
+                raise PermissionDeniedException(f"User '{user_login}' does not have permission to upload files to this library.")
+        
         # Step 1: Upload file to SharePoint
-        library_item = await self.sharepoint_repository.upload_file(
+        library_item = await self.drive_repository.upload_file(
             library_id,
             file_name,
             file_content,
@@ -113,10 +117,12 @@ class FileOperationsUseCase:
         """Get all files from a document library."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to list files.")
-        has_perms = await self.sharepoint_repository.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
-        if not has_perms:
-            raise PermissionDeniedException(f"User '{user_login}' does not have permission to view files in this library.")
-        items = await self.sharepoint_repository.get_library_items(library_id)
+        if self.permission_repository:
+            has_perms = await self.permission_repository.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
+            if not has_perms:
+                raise PermissionDeniedException(f"User '{user_login}' does not have permission to view files in this library.")
+        
+        items = await self.drive_repository.get_library_items(library_id)
         
         files = []
         for item in items:
@@ -152,10 +158,11 @@ class FileOperationsUseCase:
         """Download file content."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to download files.")
-        has_perms = await self.sharepoint_repository.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
-        if not has_perms:
-            raise PermissionDeniedException(f"User '{user_login}' does not have permission to download files from this library.")
-        return await self.sharepoint_repository.download_file(file_id, drive_id)
+        if self.permission_repository:
+            has_perms = await self.permission_repository.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
+            if not has_perms:
+                raise PermissionDeniedException(f"User '{user_login}' does not have permission to download files from this library.")
+        return await self.drive_repository.download_file(file_id, drive_id)
 
     async def delete_file(
         self, file_id: str, drive_id: str, remove_from_index: bool = True, user_login: str = ""
@@ -163,11 +170,12 @@ class FileOperationsUseCase:
         """Delete a file from a document library."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to delete files.")
-        has_perms = await self.sharepoint_repository.check_user_permission(user_login, SPPermissionMask.ADD_LIST_ITEMS)
-        if not has_perms:
-            raise PermissionDeniedException(f"User '{user_login}' does not have permission to delete files from this library.")
+        if self.permission_repository:
+            has_perms = await self.permission_repository.check_user_permission(user_login, SPPermissionMask.ADD_LIST_ITEMS)
+            if not has_perms:
+                raise PermissionDeniedException(f"User '{user_login}' does not have permission to delete files from this library.")
         # Delete from SharePoint
-        success = await self.sharepoint_repository.delete_file(file_id, drive_id)
+        success = await self.drive_repository.delete_file(file_id, drive_id)
         
         # Remove from index if requested
         if success and remove_from_index:
@@ -181,10 +189,11 @@ class FileOperationsUseCase:
         """Update file metadata."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to update file metadata.")
-        has_perms = await self.sharepoint_repository.check_user_permission(user_login, SPPermissionMask.EDIT_LIST_ITEMS)
-        if not has_perms:
-            raise PermissionDeniedException(f"User '{user_login}' does not have permission to edit files in this library.")
-        library_item = await self.sharepoint_repository.update_file_metadata(
+        if self.permission_repository:
+            has_perms = await self.permission_repository.check_user_permission(user_login, SPPermissionMask.EDIT_LIST_ITEMS)
+            if not has_perms:
+                raise PermissionDeniedException(f"User '{user_login}' does not have permission to edit files in this library.")
+        library_item = await self.drive_repository.update_file_metadata(
             file_id, drive_id, metadata
         )
         
@@ -207,10 +216,10 @@ class FileOperationsUseCase:
             Indexing result
         """
         # Download file
-        file_content = await self.sharepoint_repository.download_file(file_id, drive_id)
+        file_content = await self.drive_repository.download_file(file_id, drive_id)
         
         # Get file info to determine type
-        items = await self.sharepoint_repository.get_library_items(library_id)
+        items = await self.drive_repository.get_library_items(library_id)
         file_item = next((item for item in items if item.item_id == file_id), None)
         
         if not file_item:

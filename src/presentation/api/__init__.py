@@ -4,7 +4,6 @@ import threading
 from typing import Callable, Optional
 from src.domain.services import BlueprintGeneratorService, DataQueryService
 from src.domain.services.intent_classification import IntentClassificationService
-from src.domain.repositories import SharePointRepository
 from src.application.services import ProvisioningApplicationService, DataQueryApplicationService
 
 
@@ -12,7 +11,6 @@ class ServiceContainer:
     """Container for application services and dependencies."""
     
     _blueprint_generator: Optional[BlueprintGeneratorService] = None
-    _sharepoint_repository: Optional[SharePointRepository] = None
     _provisioning_service: Optional[ProvisioningApplicationService] = None
     _data_query_service: Optional[DataQueryApplicationService] = None
     _intent_classifier: Optional[IntentClassificationService] = None
@@ -63,14 +61,103 @@ class ServiceContainer:
         return cls._blueprint_generator
 
     @classmethod
-    def get_sharepoint_repository(cls) -> SharePointRepository:
-        """Get or create SharePoint repository."""
-        if cls._sharepoint_repository is None:
-            with cls._lock:
-                if cls._sharepoint_repository is None:
-                    from src.infrastructure.repositories import GraphAPISharePointRepository
-                    cls._sharepoint_repository = GraphAPISharePointRepository()
-        return cls._sharepoint_repository
+    def get_site_repository(cls, user_token: Optional[str] = None, site_id: Optional[str] = None):
+        """Get or create Site repository."""
+        from src.infrastructure.services.sharepoint.site_service import SiteService
+        from src.infrastructure.services.graph_api_client import GraphAPIClient
+        from src.infrastructure.services.rest_api_client import RESTAPIClient
+        from src.infrastructure.services.authentication_service import AuthenticationService
+        from src.infrastructure.config import settings
+        
+        target_site = site_id or settings.SITE_ID
+        auth_service = AuthenticationService()
+        graph_client = GraphAPIClient(auth_service, target_site, user_token=user_token)
+        rest_client = RESTAPIClient(auth_service, target_site, user_token=user_token)
+        return SiteService(graph_client, rest_client)
+
+    @classmethod
+    def get_list_repository(cls, user_token: Optional[str] = None, site_id: Optional[str] = None):
+        """Get or create List repository."""
+        from src.infrastructure.services.sharepoint.list_service import ListService
+        from src.infrastructure.services.graph_api_client import GraphAPIClient
+        from src.infrastructure.services.authentication_service import AuthenticationService
+        from src.infrastructure.config import settings
+        
+        target_site = site_id or settings.SITE_ID
+        auth_service = AuthenticationService()
+        graph_client = GraphAPIClient(auth_service, target_site, user_token=user_token)
+        return ListService(graph_client)
+        
+    @classmethod
+    def get_page_repository(cls, user_token: Optional[str] = None, site_id: Optional[str] = None):
+        """Get or create Page repository."""
+        from src.infrastructure.services.sharepoint.page_service import PageService
+        from src.infrastructure.services.graph_api_client import GraphAPIClient
+        from src.infrastructure.services.rest_api_client import RESTAPIClient
+        from src.infrastructure.services.authentication_service import AuthenticationService
+        from src.infrastructure.config import settings
+        
+        target_site = site_id or settings.SITE_ID
+        auth_service = AuthenticationService()
+        graph_client = GraphAPIClient(auth_service, target_site, user_token=user_token)
+        rest_client = RESTAPIClient(auth_service, target_site, user_token=user_token)
+        return PageService(rest_client, graph_client)
+        
+    @classmethod
+    def get_library_repository(cls, user_token: Optional[str] = None, site_id: Optional[str] = None):
+        """Get or create Library repository."""
+        from src.infrastructure.services.sharepoint.library_service import LibraryService
+        from src.infrastructure.services.graph_api_client import GraphAPIClient
+        from src.infrastructure.services.authentication_service import AuthenticationService
+        from src.infrastructure.config import settings
+        
+        target_site = site_id or settings.SITE_ID
+        auth_service = AuthenticationService()
+        graph_client = GraphAPIClient(auth_service, target_site, user_token=user_token)
+        return LibraryService(graph_client)
+
+    @classmethod
+    def get_drive_repository(cls, user_token: Optional[str] = None, site_id: Optional[str] = None):
+        """Get or create Drive repository for files and folders."""
+        from src.infrastructure.services.sharepoint.drive_service import DriveService
+        from src.infrastructure.services.graph_api_client import GraphAPIClient
+        from src.infrastructure.services.authentication_service import AuthenticationService
+        from src.infrastructure.config import settings
+        
+        target_site = site_id or settings.SITE_ID
+        auth_service = AuthenticationService()
+        graph_client = GraphAPIClient(auth_service, target_site, user_token=user_token)
+        return DriveService(graph_client)
+
+    @classmethod
+    def get_enterprise_repository(cls, user_token: Optional[str] = None, site_id: Optional[str] = None):
+        """Get or create Enterprise repository."""
+        from src.infrastructure.services.sharepoint.enterprise_service import EnterpriseService
+        from src.infrastructure.services.graph_api_client import GraphAPIClient
+        from src.infrastructure.services.rest_api_client import RESTAPIClient
+        from src.infrastructure.services.authentication_service import AuthenticationService
+        from src.infrastructure.config import settings
+        
+        target_site = site_id or settings.SITE_ID
+        auth_service = AuthenticationService()
+        graph_client = GraphAPIClient(auth_service, target_site, user_token=user_token)
+        rest_client = RESTAPIClient(auth_service, target_site, user_token=user_token)
+        return EnterpriseService(graph_client, rest_client)
+
+    @classmethod
+    def get_permission_repository(cls, user_token: Optional[str] = None, site_id: Optional[str] = None):
+        """Get or create Permission repository."""
+        from src.infrastructure.services.sharepoint.permission_service import PermissionService
+        from src.infrastructure.services.rest_api_client import RESTAPIClient
+        from src.infrastructure.services.authentication_service import AuthenticationService
+        from src.infrastructure.config import settings
+        
+        target_site = site_id or settings.SITE_ID
+        auth_service = AuthenticationService()
+        rest_client = RESTAPIClient(auth_service, target_site, user_token=user_token)
+        return PermissionService(rest_client)
+
+
 
     @classmethod
     def get_provisioning_service(cls) -> ProvisioningApplicationService:
@@ -78,7 +165,12 @@ class ServiceContainer:
         if cls._provisioning_service is None:
             cls._provisioning_service = ProvisioningApplicationService(
                 blueprint_generator=cls.get_blueprint_generator(),
-                sharepoint_repository=cls.get_sharepoint_repository()
+                list_repository=cls.get_list_repository(),
+                page_repository=cls.get_page_repository(),
+                library_repository=cls.get_library_repository(),
+                site_repository=cls.get_site_repository(),
+                permission_repository=cls.get_permission_repository(),
+                enterprise_repository=cls.get_enterprise_repository()
             )
         return cls._provisioning_service
 
@@ -89,15 +181,14 @@ class ServiceContainer:
             # Lazy import to avoid circular dependencies
             from src.infrastructure.external_services.ai_data_query_service import AIDataQueryService
             from src.infrastructure.services.smart_resource_discovery import SmartResourceDiscoveryService
-            repo = cls.get_sharepoint_repository()
-            
-            # Extract graph client from repo if possible
-            graph_client = getattr(repo, 'graph_client', None)
+            site_repo = cls.get_site_repository()
+            list_repo = cls.get_list_repository()
+            page_repo = cls.get_page_repository()
+            library_repo = cls.get_library_repository()
+            drive_repo = cls.get_drive_repository()
             
             from src.infrastructure.config import settings
-            site_id = getattr(repo, 'site_id', settings.SITE_ID)
-
-
+            site_id = getattr(site_repo, 'site_id', settings.SITE_ID)
 
             # Resolve the singleton AI client once so both services share it.
             ai_client, ai_model = cls.get_ai_client()
@@ -105,13 +196,22 @@ class ServiceContainer:
             # Build SmartResourceDiscoveryService with the AI client injected
             # directly — no post-construction back-fill needed.
             smart_discovery = SmartResourceDiscoveryService(
-                sharepoint_repository=repo,
+                site_repository=site_repo,
+                list_repository=list_repo,
+                library_repository=library_repo,
+                page_repository=page_repo,
                 ai_client=ai_client,
                 ai_model=ai_model,
             )
 
             data_query_service = AIDataQueryService(
-                repo, graph_client, site_id,
+                site_repository=site_repo,
+                list_repository=list_repo,
+                library_repository=library_repo,
+                page_repository=page_repo,
+                drive_repository=drive_repo,
+                graph_client=getattr(site_repo, 'graph_client', None),
+                site_id=site_id,
                 smart_discovery_service=smart_discovery,
                 ai_client=ai_client,
                 ai_model=ai_model,
@@ -125,10 +225,7 @@ class ServiceContainer:
         """Set blueprint generator (useful for testing)."""
         cls._blueprint_generator = generator
     
-    @classmethod
-    def set_sharepoint_repository(cls, repository: SharePointRepository) -> None:
-        """Set SharePoint repository (useful for testing)."""
-        cls._sharepoint_repository = repository
+
     
     @classmethod
     def set_provisioning_service(cls, service: ProvisioningApplicationService) -> None:
@@ -139,7 +236,6 @@ class ServiceContainer:
     def reset(cls):
         """Reset all services (useful for testing)."""
         cls._blueprint_generator = None
-        cls._sharepoint_repository = None
         cls._provisioning_service = None
         cls._data_query_service = None
         cls._intent_classifier = None
@@ -163,21 +259,26 @@ def get_intent_classifier() -> IntentClassificationService:
     return ServiceContainer.get_intent_classifier()
 
 
-def get_repository(user_token: Optional[str] = None, site_id: Optional[str] = None) -> SharePointRepository:
-    """FastAPI dependency provider for SharePoint repository.
+def get_site_repository(user_token: Optional[str] = None, site_id: Optional[str] = None):
+    return ServiceContainer.get_site_repository(user_token=user_token, site_id=site_id)
 
-    When *user_token* is provided a fresh per-request repository is created so
-    that all Graph calls are made on-behalf-of the signed-in user (OBO flow).
-    When no token is provided the module-level singleton (service account) is
-    returned — used by background indexing, provisioning, etc.
-    """
-    if user_token:
-        from src.infrastructure.repositories import GraphAPISharePointRepository
-        return GraphAPISharePointRepository(user_token=user_token, site_id=site_id)
-    return ServiceContainer.get_sharepoint_repository()
-    @classmethod
-    async def get_graph_client(cls):
-        from src.infrastructure.services.graph_api_client import GraphAPIClient
-        from src.infrastructure.services.cache_service import CacheService
-        # Using placeholder CacheService where applicable
-        return GraphAPIClient(CacheService())
+def get_list_repository(user_token: Optional[str] = None, site_id: Optional[str] = None):
+    return ServiceContainer.get_list_repository(user_token=user_token, site_id=site_id)
+
+def get_page_repository(user_token: Optional[str] = None, site_id: Optional[str] = None):
+    return ServiceContainer.get_page_repository(user_token=user_token, site_id=site_id)
+
+def get_library_repository(user_token: Optional[str] = None, site_id: Optional[str] = None):
+    return ServiceContainer.get_library_repository(user_token=user_token, site_id=site_id)
+
+def get_drive_repository(user_token: Optional[str] = None, site_id: Optional[str] = None):
+    return ServiceContainer.get_drive_repository(user_token=user_token, site_id=site_id)
+
+def get_permission_repository(user_token: Optional[str] = None, site_id: Optional[str] = None):
+    return ServiceContainer.get_permission_repository(user_token=user_token, site_id=site_id)
+
+def get_enterprise_repository(user_token: Optional[str] = None, site_id: Optional[str] = None):
+    return ServiceContainer.get_enterprise_repository(user_token=user_token, site_id=site_id)
+
+
+

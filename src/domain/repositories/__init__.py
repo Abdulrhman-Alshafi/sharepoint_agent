@@ -24,32 +24,8 @@ from src.domain.repositories.enterprise_repository import IEnterpriseRepository
 
 
 
-class SharePointRepository(
-    IListRepository,
-    IPageRepository,
-    ILibraryRepository,
-    ISiteRepository,
-    IPermissionRepository,
-    IEnterpriseRepository
-):
-    """
-    Composite repository interface for SharePoint operations.
-    
-    This interface combines all focused repository interfaces for backward compatibility.
-    New code should prefer using focused interfaces directly:
-    - IListRepository: List and list item operations
-    - IPageRepository: Page operations
-    - ILibraryRepository: Document library and file operations
-    - ISiteRepository: Site operations
-    - IPermissionRepository: Permission and group operations
-    - IEnterpriseRepository: Content types, term sets, and views
-    """
-    pass
-
-
 # Export all interfaces
 __all__ = [
-    'SharePointRepository',
     'IListRepository',
     'IPageRepository',
     'ILibraryRepository',

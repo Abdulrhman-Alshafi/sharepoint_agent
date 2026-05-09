@@ -15,7 +15,8 @@ class LibraryQueryMixin:
     library_comparison, content_summary, and search queries.
 
     Requires *self* to provide:
-        self.sharepoint_repository
+        self.library_repository
+        self.drive_repository
         self.document_index       – DocumentIndexService
         self.document_intelligence – DocumentIntelligenceService
         self.library_intelligence  – LibraryIntelligenceService
@@ -58,7 +59,7 @@ class LibraryQueryMixin:
             )
         # ────────────────────────────────────────────────────────────────
         try:
-            file_items = await self.sharepoint_repository.get_library_items(library_id, site_id=site_id)
+            file_items = await self.drive_repository.get_library_items(library_id, site_id=site_id)
             site_context = f" in the **{site_name}** site" if site_name else ""
 
             if not file_items:
@@ -433,7 +434,7 @@ class LibraryQueryMixin:
                     suggested_actions=["Show me all libraries"],
                 )
 
-            all_libs = await self.sharepoint_repository.get_all_document_libraries()
+            all_libs = await self.library_repository.get_all_document_libraries()
             libraries_data = []
             for lib_name in library_names[:5]:
                 matched_lib = next(
@@ -442,7 +443,7 @@ class LibraryQueryMixin:
                 )
                 if matched_lib:
                     lib_id = matched_lib.get("id")
-                    files = await self.sharepoint_repository.get_library_items(lib_id)
+                    files = await self.drive_repository.get_library_items(lib_id)
                     indexed = await self.document_index.get_library_documents(lib_id)
                     stats = await self.document_index.get_library_stats(lib_id)
                     libraries_data.append(
@@ -496,7 +497,7 @@ class LibraryQueryMixin:
     ) -> DataQueryResult:
         """Handle library content summary queries."""
         try:
-            file_items = await self.sharepoint_repository.get_library_items(library_id)
+            file_items = await self.drive_repository.get_library_items(library_id)
             indexed_docs = await self.document_index.get_library_documents(library_id)
             stats = await self.document_index.get_library_stats(library_id)
 

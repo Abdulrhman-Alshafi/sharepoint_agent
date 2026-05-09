@@ -9,13 +9,18 @@ logger = get_logger(__name__)
 
 async def handle_update_operations(message: str, session_id: str, site_id: str, provisioning_service: ProvisioningApplicationService, user_email: str = None, user_login_name: str = None, user_token: str = None, last_created: tuple = None) -> ChatResponse:
     """Handle resource update requests."""
-    from src.presentation.api import get_repository
+    from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.domain.exceptions import PermissionDeniedException
     from src.application.use_cases.update_resource_use_case import UpdateResourceUseCase
     from src.domain.entities.conversation import ConversationState, GatheringPhase
     
     try:
-        repository = get_repository(user_token=user_token)
+        site_repository = get_site_repository(user_token=user_token)
+        list_repository = get_list_repository(user_token=user_token)
+        page_repository = get_page_repository(user_token=user_token)
+        library_repository = get_library_repository(user_token=user_token)
+        permission_repository = get_permission_repository(user_token=user_token)
+        enterprise_repository = get_enterprise_repository(user_token=user_token)
         update_use_case = UpdateResourceUseCase(repository)
         from src.presentation.api import ServiceContainer
         gathering_service = ServiceContainer.get_gathering_service()
@@ -33,7 +38,7 @@ async def handle_update_operations(message: str, session_id: str, site_id: str, 
         
         # Always search all lists by display name — catches "update IT Service Requests to X"
         # even when the word "list" is not in the message.
-        all_lists = await repository.get_all_lists(site_id)
+        all_lists = await list_repository.get_all_lists(site_id)
         for lst in all_lists:
             list_name = lst.get("displayName", "")
             if list_name.lower() in message_lower:
@@ -81,13 +86,13 @@ async def handle_update_operations(message: str, session_id: str, site_id: str, 
             # Check whether from_name is a column on this list
             if resource_id and resource_type == "list":
                 try:
-                    _cols = await repository.get_list_columns(resource_id, site_id=site_id)
+                    _cols = await list_repository.get_list_columns(resource_id, site_id=site_id)
                     for _col in _cols:
                         _col_display = _col.get("displayName", "")
                         _col_internal = _col.get("name", "")
                         if _col_display.lower() == from_name.lower() or _col_internal.lower() == from_name.lower():
                             # Column rename — execute directly (low-risk, no preview needed)
-                            await repository.lists.update_list_column(resource_id, _col["id"], {"displayName": to_name})
+                            await list_repository.update_list_column(resource_id, _col["id"], {"displayName": to_name})
                             return ChatResponse(
                                 intent="update",
                                 reply=f"✅ Column **'{_col_display}'** renamed to **'{to_name}'** on '{resource_name}'.",

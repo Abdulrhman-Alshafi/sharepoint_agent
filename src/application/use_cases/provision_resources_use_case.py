@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 from src.domain.entities import ProvisioningBlueprint, ActionType
 from src.domain.entities.core import SPPermissionMask
-from src.domain.repositories import SharePointRepository
 from src.domain.services import BlueprintGeneratorService
 from src.domain.exceptions import (
     InvalidBlueprintException,
@@ -39,10 +38,20 @@ class ProvisionResourcesUseCase:
     def __init__(
         self,
         blueprint_generator: BlueprintGeneratorService,
-        sharepoint_repository: SharePointRepository
+        list_repository=None,
+        page_repository=None,
+        library_repository=None,
+        site_repository=None,
+        permission_repository=None,
+        enterprise_repository=None
     ):
         self.blueprint_generator = blueprint_generator
-        self.sharepoint_repository = sharepoint_repository
+        self.list_repository = list_repository
+        self.page_repository = page_repository
+        self.library_repository = library_repository
+        self.site_repository = site_repository
+        self.permission_repository = permission_repository
+        self.enterprise_repository = enterprise_repository
         
         # Initialize content generation services
         logger.info("[ProvisionResourcesUseCase] Initializing content generation services")
@@ -52,25 +61,25 @@ class ProvisionResourcesUseCase:
         
         # Initialize provisioners
         logger.info("[ProvisionResourcesUseCase] Initializing resource provisioners")
-        self.list_provisioner = ListProvisioner(sharepoint_repository)
+        self.list_provisioner = ListProvisioner(self.list_repository)
         
         # PageProvisioner with content services
         self.page_provisioner = PageProvisioner(
-            sharepoint_repository,
+            self.page_repository,
             purpose_detector=self.purpose_detector,
             template_manager=self.template_manager,
             content_generator=self.content_generator,
         )
         logger.debug("[ProvisionResourcesUseCase] PageProvisioner initialized with content services")
         
-        self.library_provisioner = LibraryProvisioner(sharepoint_repository)
-        self.group_provisioner = GroupProvisioner(sharepoint_repository)
-        self.enterprise_provisioner = EnterpriseProvisioner(sharepoint_repository)
+        self.library_provisioner = LibraryProvisioner(self.library_repository)
+        self.group_provisioner = GroupProvisioner(self.permission_repository)
+        self.enterprise_provisioner = EnterpriseProvisioner(self.enterprise_repository)
         
         # SiteProvisioner with content services
         self.site_provisioner = SiteProvisioner(
-            sharepoint_repository,
-            page_repository=sharepoint_repository,
+            self.site_repository,
+            page_repository=self.page_repository,
             purpose_detector=self.purpose_detector,
             template_manager=self.template_manager,
             content_generator=self.content_generator,
@@ -90,7 +99,6 @@ class ProvisionResourcesUseCase:
             Response DTO with provisioned resources
         """
         from src.domain.exceptions import PermissionDeniedException
-        from src.infrastructure.repositories import GraphAPISharePointRepository
 
         # 1. Enforce user permissions using OBO repository if token provided
         user_identity = command.user_login_name or command.user_email
@@ -99,41 +107,47 @@ class ProvisionResourcesUseCase:
                 "No user identity provided. Authentication is required to provision resources."
             )
         
-        # Create user-aware repository for permission checks when user token available
-        perm_repository = self.sharepoint_repository
-        if user_token:
-            perm_repository = GraphAPISharePointRepository(user_token=user_token, site_id=command.target_site_id)
-            
-        has_perms = await perm_repository.check_user_permission(
-            user_identity, SPPermissionMask.MANAGE_WEB
+        from src.infrastructure.repositories.factory import (
+            get_site_repository, get_list_repository, get_page_repository,
+            get_library_repository, get_permission_repository, get_enterprise_repository
         )
+
+        # Create user-aware repositories for operations when user token available
+        exec_site_repo = get_site_repository(user_token=user_token, site_id=command.target_site_id) if user_token else self.site_repository
+        exec_list_repo = get_list_repository(user_token=user_token, site_id=command.target_site_id) if user_token else self.list_repository
+        exec_page_repo = get_page_repository(user_token=user_token, site_id=command.target_site_id) if user_token else self.page_repository
+        exec_lib_repo = get_library_repository(user_token=user_token, site_id=command.target_site_id) if user_token else self.library_repository
+        exec_perm_repo = get_permission_repository(user_token=user_token, site_id=command.target_site_id) if user_token else self.permission_repository
+        exec_ent_repo = get_enterprise_repository(user_token=user_token, site_id=command.target_site_id) if user_token else self.enterprise_repository
+
+        # Check permissions
+        has_perms = True
+        if exec_site_repo and hasattr(exec_site_repo, "check_user_permission"):
+            has_perms = await exec_site_repo.check_user_permission(
+                user_identity, SPPermissionMask.MANAGE_WEB
+            )
         if not has_perms:
             raise PermissionDeniedException(
                 f"User '{user_identity}' does not have sufficient SharePoint permissions (ManageWeb) to provision new resources."
             )
 
-        # IMPORTANT: execute provisioning with the same repository context used
-        # for permission checks. This ensures OBO user-token calls are used for
-        # tenant-scoped operations like site creation.
-        execution_repository = perm_repository if user_token else self.sharepoint_repository
-
         site_provisioner = SiteProvisioner(
-            execution_repository,
-            page_repository=execution_repository,
+            exec_site_repo,
+            page_repository=exec_page_repo,
             purpose_detector=self.purpose_detector,
             template_manager=self.template_manager,
             content_generator=self.content_generator,
         )
-        list_provisioner = ListProvisioner(execution_repository)
+        list_provisioner = ListProvisioner(exec_list_repo)
         page_provisioner = PageProvisioner(
-            execution_repository,
+            exec_page_repo,
             purpose_detector=self.purpose_detector,
             template_manager=self.template_manager,
             content_generator=self.content_generator,
         )
-        library_provisioner = LibraryProvisioner(execution_repository)
-        group_provisioner = GroupProvisioner(execution_repository)
-        enterprise_provisioner = EnterpriseProvisioner(execution_repository)
+        library_provisioner = LibraryProvisioner(exec_lib_repo)
+        group_provisioner = GroupProvisioner(exec_perm_repo)
+        enterprise_provisioner = EnterpriseProvisioner(exec_ent_repo)
         
         # 2. Validate and generate blueprint
         await self._validate_prompt(command.prompt, skip_high_risk_check=skip_high_risk_check)
@@ -194,14 +208,14 @@ class ProvisionResourcesUseCase:
                 if target_site_id and "," not in target_site_id:
                     try:
                         logger.info("Attempting to resolve full Graph ID using GUID: %s", target_site_id)
-                        resolved = await execution_repository.get_site(target_site_id)
+                        resolved = await exec_site_repo.get_site(target_site_id)
                     except Exception as e:
                         logger.warning("Could not resolve new site ID from GUID: %s", e)
                 
                 # 2. Try resolving by URL
                 if (not resolved or not resolved.get("id")) and site_result.get("webUrl"):
                     try:
-                        resolved = await execution_repository.get_site_by_url(site_result["webUrl"])
+                        resolved = await exec_site_repo.get_site_by_url(site_result["webUrl"])
                     except Exception as e:
                         logger.warning("Could not resolve new site ID from URL: %s", e)
                 
@@ -213,7 +227,7 @@ class ProvisionResourcesUseCase:
                         # Poll for up to 15 seconds
                         for attempt in range(3):
                             await asyncio.sleep(5)
-                            found = await execution_repository.search_sites(site_result.get("displayName", ""))
+                            found = await exec_site_repo.search_sites(site_result.get("displayName", ""))
                             # Exact match is preferred, or just take first
                             if found:
                                 resolved = found[0]
@@ -237,10 +251,7 @@ class ProvisionResourcesUseCase:
         
         principal_resolver_repo = None
         if user_token:
-            principal_resolver_repo = GraphAPISharePointRepository(
-                user_token=user_token,
-                site_id=target_site_id or command.target_site_id,
-            )
+            principal_resolver_repo = exec_perm_repo
 
         created_lists, list_links, list_warnings = await list_provisioner.provision(
             blueprint,
@@ -279,9 +290,17 @@ class ProvisionResourcesUseCase:
                     file_name = f"{wf_name.replace(' ', '_')}_flow_template.json"
                     try:
                         file_bytes = _json.dumps(wf["template"], indent=2).encode("utf-8")
-                        await execution_repository.upload_file(
-                            target_lib_id, file_name, file_bytes
-                        )
+                        from src.infrastructure.repositories.factory import get_drive_repository
+                        exec_drive_repo = get_drive_repository(user_token=user_token, site_id=target_site_id) if user_token else None
+                        
+                        if exec_drive_repo:
+                            await exec_drive_repo.upload_file(
+                                target_lib_id, file_name, file_bytes
+                            )
+                        else:
+                            await exec_lib_repo.upload_file(
+                                target_lib_id, file_name, file_bytes
+                            )
                         wf["artifact_saved_to"] = target_lib_name
                         wf["artifact_file"] = file_name
                         logger.info(
@@ -377,7 +396,7 @@ class ProvisionResourcesUseCase:
         try:
             from src.infrastructure.services.tenant_users_service import TenantUsersService
             tenant_users = await TenantUsersService.get_tenant_users(
-                self.sharepoint_repository,
+                self.site_repository,
                 site_id=target_site_id,
             )
         except Exception as e:
@@ -423,7 +442,9 @@ class ProvisionResourcesUseCase:
             target_site_id: Site to check collisions against (defaults to main site)
         """
         try:
-            existing_lists = await self.sharepoint_repository.get_all_lists(site_id=target_site_id or None)
+            if not self.list_repository:
+                return
+            existing_lists = await self.list_repository.get_all_lists(site_id=target_site_id or None)
             existing_titles = {
                 lst.get("displayName", "").lower(): str(lst.get("id", ""))
                 for lst in existing_lists

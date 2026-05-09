@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from src.infrastructure.rate_limiter import limiter
 from src.presentation.api.dependencies import get_current_user
-from src.presentation.api import get_repository, ServiceContainer
+from src.presentation.api import get_library_repository, ServiceContainer
 from src.application.use_cases.library_analysis_use_case import LibraryAnalysisUseCase
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ async def analyze_library(
 ) -> Dict[str, Any]:
     """Analyze a library's metadata structure."""
     raw_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
-    repo = get_repository(user_token=raw_token)
+    repo = get_library_repository(user_token=raw_token)
     ai_client, ai_model = ServiceContainer.get_ai_client()
     
     use_case = LibraryAnalysisUseCase(repo, ai_client, ai_model)
