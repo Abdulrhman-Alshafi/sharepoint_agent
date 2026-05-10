@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from src.domain.entities.core import ActionType
+from src.domain.value_objects import SPColumn
 
 
 @dataclass
@@ -11,6 +12,7 @@ class DocumentLibrary:
     """Entity representing a SharePoint Document Library."""
     title: str
     description: str
+    columns: List[SPColumn] = field(default_factory=list)
     content_types: List[str] = field(default_factory=list)
     seed_data: List[Dict[str, Any]] = field(default_factory=list)
     library_id: str = field(default="")

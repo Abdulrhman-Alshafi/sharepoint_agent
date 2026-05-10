@@ -1,6 +1,7 @@
 """Handler for SharePoint list item operations (CRUD, attachments, views)."""
 
 import asyncio
+import re
 from typing import List, Dict, Any, Optional
 from src.presentation.api.schemas.chat_schemas import ChatResponse
 from src.presentation.api.orchestrators.orchestrator_utils import get_logger, error_response
@@ -132,12 +133,93 @@ def _remap_to_internal_fields(item: Dict[str, Any], name_map: Dict[str, str]) ->
     return remapped
 
 
+def _split_unquoted_commas(text: str) -> List[str]:
+    """Split a CSV-like string by commas while preserving quoted values."""
+    parts: List[str] = []
+    buff: List[str] = []
+    in_quotes = False
+    for ch in text:
+        if ch == '"':
+            in_quotes = not in_quotes
+            buff.append(ch)
+            continue
+        if ch == "," and not in_quotes:
+            part = "".join(buff).strip()
+            if part:
+                parts.append(part)
+            buff = []
+            continue
+        buff.append(ch)
+    tail = "".join(buff).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _parse_kv_row(row_text: str) -> Dict[str, Any]:
+    """Parse one row in 'field: value, field2: value2' format."""
+    result: Dict[str, Any] = {}
+    normalized = row_text.strip().lstrip("-*").strip()
+    for segment in _split_unquoted_commas(normalized):
+        if ":" not in segment:
+            continue
+        key, value = segment.split(":", 1)
+        k = key.strip()
+        v = value.strip()
+        if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+            v = v[1:-1]
+        if k:
+            result[k] = v
+    return result
+
+
+def _parse_explicit_multi_item_rows(message: str) -> List[Dict[str, Any]]:
+    """Parse multi-line key:value item payloads where each line is one item row."""
+    rows: List[Dict[str, Any]] = []
+    current_parts: List[str] = []
+
+    for raw_line in (message or "").splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+
+        # Remove optional list prefixes like "1. ", "- ", "* ".
+        line = re.sub(r"^\s*(?:\d+[\.)]\s+|[-*]\s+)", "", line)
+
+        starts_new = line.lower().startswith("title:") and len(current_parts) > 0
+        if starts_new:
+            parsed = _parse_kv_row(", ".join(current_parts))
+            if parsed:
+                rows.append(parsed)
+            current_parts = [line]
+        else:
+            current_parts.append(line)
+
+    if current_parts:
+        parsed = _parse_kv_row(", ".join(current_parts))
+        if parsed:
+            rows.append(parsed)
+
+    return rows
+
+
 async def _resolve_person_fields(
     item: Dict[str, Any],
     columns: List[Dict[str, Any]],
     repository: Any,
+    site_id: Optional[str] = None,
+    fallback_user_email: Optional[str] = None,
+    tenant_lookup_repo: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Convert person field values to <FieldName>LookupId when possible."""
+    """Convert person field values to <FieldName>LookupId when possible.
+    
+    Supports:
+    - Email addresses: user@company.com
+    - Names: "Name" (fuzzy matched against tenant users)
+    - Person dicts: {"email": "user@company.com"} or {"displayName": "Name"}
+    """
+    from src.infrastructure.services.tenant_users_service import TenantUsersService
+    
     person_columns = {
         c.get("name", "") for c in columns if c.get("personOrGroup") is not None and c.get("name")
     }
@@ -146,17 +228,81 @@ async def _resolve_person_fields(
 
     resolved: Dict[str, Any] = {}
     for key, value in item.items():
-        if key in person_columns and isinstance(value, str) and value:
+        if key in person_columns:
+            user_value = ""
+            if isinstance(value, str):
+                user_value = value.strip()
+            elif isinstance(value, dict):
+                for candidate_key in ("email", "mail", "userPrincipalName", "upn", "login", "displayName"):
+                    candidate = value.get(candidate_key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        user_value = candidate.strip()
+                        break
+
+            if not user_value:
+                user_value = (fallback_user_email or "").strip()
+
+            if not user_value:
+                continue
+
+            # Attempt 1: Direct email resolution
+            resolved_email = user_value
+            if not TenantUsersService.is_email_like(user_value):
+                # Value is a name, not an email — try name-based lookup
+                try:
+                    matched_user = await TenantUsersService.find_user_by_name(
+                        tenant_lookup_repo or repository,
+                        user_value,
+                        site_id=site_id,
+                    )
+                    if matched_user and matched_user.get("email"):
+                        resolved_email = matched_user["email"]
+                        logger.info(
+                            "Resolved person name '%s' → email '%s' for column '%s'",
+                            user_value,
+                            resolved_email,
+                            key,
+                        )
+                except Exception as name_lookup_err:
+                    logger.debug(
+                        "Name-based person lookup failed for '%s' in column '%s': %s",
+                        user_value,
+                        key,
+                        name_lookup_err,
+                    )
+
+            # Attempt 2: Resolve email to principal ID
             try:
-                principal_id = await repository.ensure_user_principal_id(value)
+                principal_id = await repository.ensure_user_principal_id(resolved_email, site_id=site_id)
                 resolved[f"{key}LookupId"] = principal_id
             except Exception as resolve_err:
-                logger.warning(
-                    "Could not resolve user '%s' for column '%s': %s — skipping field",
-                    value,
-                    key,
-                    resolve_err,
-                )
+                fallback_value = (fallback_user_email or "").strip()
+                if fallback_value and fallback_value.lower() != resolved_email.lower():
+                    try:
+                        fallback_id = await repository.ensure_user_principal_id(fallback_value, site_id=site_id)
+                        resolved[f"{key}LookupId"] = fallback_id
+                        logger.info(
+                            "Resolved fallback user '%s' for unresolved value '%s' in column '%s'",
+                            fallback_value,
+                            user_value,
+                            key,
+                        )
+                    except Exception as fallback_err:
+                        logger.warning(
+                            "Could not resolve user '%s' for column '%s': %s; fallback '%s' also failed: %s — skipping field",
+                            user_value,
+                            key,
+                            resolve_err,
+                            fallback_value,
+                            fallback_err,
+                        )
+                else:
+                    logger.warning(
+                        "Could not resolve user '%s' for column '%s': %s — skipping field",
+                        user_value,
+                        key,
+                        resolve_err,
+                    )
         else:
             resolved[key] = value
     return resolved
@@ -229,7 +375,13 @@ async def _generate_sample_items(
 
     try:
         raw = await asyncio.get_running_loop().run_in_executor(None, generate_text, prompt)
-        raw = raw.strip()
+        raw = raw.strip() if raw else ""
+        
+        # Check if response is empty
+        if not raw:
+            logger.error("Sample item generation failed: AI returned empty response")
+            return []
+        
         # Strip markdown code fences if present
         if raw.startswith("```json"):
             raw = raw.split("```json", 1)[1].split("```")[0].strip()
@@ -240,12 +392,23 @@ async def _generate_sample_items(
             m = _re.search(r'\{.*\}', raw, _re.DOTALL)
             if m:
                 raw = m.group(0).strip()
-        data = _json.loads(raw)
+        
+        if not raw:
+            logger.error("Sample item generation failed: Could not extract JSON from response")
+            return []
+        
+        try:
+            data = _json.loads(raw)
+        except _json.JSONDecodeError as je:
+            logger.error("Sample item generation failed: Invalid JSON response: %s. Raw response: %s...", je, raw[:200])
+            return []
+        
         items = data.get("items", [])
         if not isinstance(items, list):
+            logger.error("Sample item generation failed: Expected 'items' list in response, got %s", type(items))
             raise ValueError(f"Expected 'items' list, got: {type(items)}")
     except Exception as e:
-        logger.error("Sample item generation failed: %s", e)
+        logger.error("Sample item generation failed: %s", str(e))
         return []  # Signal failure — caller will ask user for input instead
     # Strip system fields from every generated item before returning
     return [_clean_fields(item) for item in items if isinstance(item, dict)]
@@ -276,7 +439,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
         library_repository = get_library_repository(user_token=user_token)
         permission_repository = get_permission_repository(user_token=user_token)
         enterprise_repository = get_enterprise_repository(user_token=user_token)
-        item_operations = ListItemOperationsUseCase(list_repository)
+        item_operations = ListItemOperationsUseCase(list_repository, permission_repository=permission_repository)
         # Prefer the site where the list was created (from last_created[2]) over the request site
         _item_site_id = (last_created[2] if (last_created and len(last_created) > 2 and last_created[2]) else None) or site_id
 
@@ -286,6 +449,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
         # the list, inject [List: name] so the AI parser knows which list to use.
         _parse_message = message
         _list_context: Optional[str] = None
+        _prefer_last_created_list = False
         if last_created and last_created[1] == "list" and last_created[0]:
             _last_list_name = last_created[0]
             _msg_lower_check = message.lower()
@@ -300,6 +464,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             _list_name_in_msg = _last_list_name.lower() in _msg_lower_check
             if _has_pronoun or (_has_filter and not _list_name_in_msg):
                 _parse_message = f"{message} [List: {_last_list_name}]"
+                _prefer_last_created_list = True
 
             # ── Fetch schema to build rich list context for the AI parser ──────
             # Find the list, get its columns, then pass them as structured context
@@ -419,11 +584,29 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
         # Find the list by name
         all_lists = await list_repository.get_all_lists(_item_site_id)
         target_list = None
-        for lst in all_lists:
-            list_name = lst.get("displayName", "").lower()
-            if operation.list_name.lower() in list_name or list_name in operation.list_name.lower():
-                target_list = lst
-                break
+
+        # If the user used pronouns/ambiguous references, strongly prefer the
+        # last-created list context before fuzzy parser-derived matching.
+        if _prefer_last_created_list and last_created and last_created[1] == "list" and last_created[0]:
+            _fallback_name = last_created[0].lower()
+            for lst in all_lists:
+                _dname = lst.get("displayName", "").lower()
+                if _dname == _fallback_name:
+                    target_list = lst
+                    break
+            if not target_list:
+                for lst in all_lists:
+                    _dname = lst.get("displayName", "").lower()
+                    if _fallback_name in _dname or _dname in _fallback_name:
+                        target_list = lst
+                        break
+
+        if not target_list:
+            for lst in all_lists:
+                list_name = lst.get("displayName", "").lower()
+                if operation.list_name.lower() in list_name or list_name in operation.list_name.lower():
+                    target_list = lst
+                    break
 
         # Fallback: if not found by parsed name but we have a last_created list, try that name
         if not target_list and last_created and last_created[1] == "list" and last_created[0]:
@@ -452,6 +635,59 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             except Exception:
                 columns = []
             name_map = _build_column_name_map(columns)
+            explicit_rows = _parse_explicit_multi_item_rows(message)
+            if not operation.field_values and explicit_rows:
+                operation.field_values = explicit_rows[0]
+
+            if len(explicit_rows) > 1:
+                created_count = 0
+                errors = []
+                for row_values in explicit_rows:
+                    try:
+                        clean = _clean_fields(row_values)
+                        clean = _remap_to_internal_fields(clean, name_map)
+                        clean = await _resolve_person_fields(
+                            clean,
+                            columns,
+                            permission_repository,
+                            site_id=_item_site_id,
+                            fallback_user_email=user_login_name,
+                            tenant_lookup_repo=list_repository,
+                        )
+                        await item_operations.create_item_validated(list_id, clean, _item_site_id, user_login=user_login_name)
+                        created_count += 1
+                    except Exception as e:
+                        errors.append(str(e))
+
+                if created_count == 0:
+                    return ChatResponse(
+                        intent="chat",
+                        reply=(
+                            f"I found **{len(explicit_rows)}** item rows, but none could be added to **{list_name}**.\n\n"
+                            f"Please check field names and values, then resend in this format:\n"
+                            f"```text\n"
+                            f"Title: <value>, street_address: <value>, city: <value>, state: <value>\n"
+                            f"Title: <value>, street_address: <value>, city: <value>, state: <value>\n"
+                            f"```"
+                        ),
+                        session_id=session_id,
+                    )
+
+                _noun = "item" if created_count == 1 else "items"
+                reply = (
+                    f"✅ Added **{created_count}** {_noun} to **{list_name}** from your multi-row input."
+                )
+                if errors:
+                    _enoun = "item" if len(errors) == 1 else "items"
+                    reply += f"\n\n⚠️ {len(errors)} {_enoun} failed: {'; '.join(errors)}"
+
+                return ChatResponse(
+                    intent="item_operation",
+                    reply=reply,
+                    session_id=session_id,
+                    suggested_actions=_item_suggested_actions(list_name),
+                    data_summary={"operation": "create", "count": created_count, "list_name": list_name, "site_id": _item_site_id},
+                )
 
             # ── Auto-generate: AI makes up the data ────────
             _msg_lower = message.lower()
@@ -477,7 +713,14 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                     try:
                         clean = _clean_fields(item_data)
                         clean = _remap_to_internal_fields(clean, name_map)
-                        clean = await _resolve_person_fields(clean, columns, list_repository)
+                        clean = await _resolve_person_fields(
+                            clean,
+                            columns,
+                            permission_repository,
+                            site_id=_item_site_id,
+                            fallback_user_email=user_login_name,
+                            tenant_lookup_repo=list_repository,
+                        )
                         await item_operations.create_item_validated(list_id, clean, _item_site_id, user_login=user_login_name)
                         created_count += 1
                     except Exception as e:
@@ -491,7 +734,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                     ]
                     _col_format = ", ".join(f"**{name}** ({ctype})" for name, ctype in user_cols if name) or "**Title** (text)"
                     _example = ", ".join(
-                        f"{name}: <value>" for name, _ in (user_cols[:4] if user_cols else [("Title", "text")])
+                        f"{name}: <value>" for name, _ in (user_cols if user_cols else [("Title", "text")])
                     )
                     _suggestions = [
                         f"Add 1 sample item to list {list_name}",
@@ -503,7 +746,9 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                         reply=(
                             f"I wasn't able to auto-generate data for **{list_name}** right now.\n\n"
                             f"What would you like to add? This list has these columns:\n{_col_format}\n\n"
-                            f"You can tell me the values like:\n> *{_example}*"
+                                f"Use this exact format (comma-separated key:value pairs on one line):\n"
+                                f"```text\n{_example}\n```\n"
+                                f"If any value contains commas or apostrophes, wrap it in double quotes."
                         ),
                         quick_suggestions=_suggestions,
                         field_options=_suggestions,
@@ -532,7 +777,7 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                 ]
                 _col_format = ", ".join(f"**{name}** ({ctype})" for name, ctype in user_cols if name) or "**Title** (text)"
                 _example = ", ".join(
-                    f"{name}: <value>" for name, _ in (user_cols[:4] if user_cols else [("Title", "text")])
+                    f"{name}: <value>" for name, _ in (user_cols if user_cols else [("Title", "text")])
                 )
                 _suggestions = [
                     f"Add 1 sample item to list {list_name}",
@@ -544,7 +789,9 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                     reply=(
                         f"Sure! What data would you like to add to **{list_name}**?\n\n"
                         f"This list has these columns:\n{_col_format}\n\n"
-                        f"You can tell me the values like:\n> *{_example}*\n\n"
+                        f"Use this exact format (comma-separated key:value pairs on one line):\n"
+                        f"```text\n{_example}\n```\n"
+                        f"If any value contains commas or apostrophes, wrap it in double quotes.\n\n"
                         f"Or I can generate sample data for you."
                     ),
                     quick_suggestions=_suggestions,
@@ -556,7 +803,14 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
             try:
                 clean_values = _clean_fields(operation.field_values)
                 clean_values = _remap_to_internal_fields(clean_values, name_map)
-                clean_values = await _resolve_person_fields(clean_values, columns, list_repository)
+                clean_values = await _resolve_person_fields(
+                    clean_values,
+                    columns,
+                    permission_repository,
+                    site_id=_item_site_id,
+                    fallback_user_email=user_login_name,
+                    tenant_lookup_repo=list_repository,
+                )
                 # Use validated create for better error messages
                 result = await item_operations.create_item_validated(list_id, clean_values, _item_site_id, user_login=user_login_name)
 
@@ -584,6 +838,46 @@ async def handle_item_operations(message: str, session_id: str, site_id: str, us
                 return ChatResponse(
                     intent="chat",
                     reply=f"❌ **Validation Error**: {str(e)}\n\nPlease correct the field value and try again."
+                )
+            except (ValueError, TypeError, KeyError) as e:
+                user_cols = [
+                    (c.get("displayName") or c.get("name", ""), _column_type_label(c))
+                    for c in _user_writable_columns(columns)
+                ]
+                _col_format = ", ".join(f"**{name}** ({ctype})" for name, ctype in user_cols if name) or "**Title** (text)"
+                _example = ", ".join(
+                    f"{name}: <value>" for name, _ in (user_cols if user_cols else [("Title", "text")])
+                )
+                return ChatResponse(
+                    intent="chat",
+                    reply=(
+                        f"I couldn't read the values for **{list_name}**.\n\n"
+                        f"Expected columns:\n{_col_format}\n\n"
+                        f"Please resend using this exact format:\n"
+                        f"```text\n{_example}\n```\n"
+                        f"Details: {str(e)}"
+                    ),
+                    session_id=session_id,
+                )
+            except (PermissionDeniedException, AuthenticationException):
+                raise
+            except Exception as e:
+                logger.warning("Create item failed with unhandled error: %s", e, exc_info=True)
+                user_cols = [
+                    (c.get("displayName") or c.get("name", ""), _column_type_label(c))
+                    for c in _user_writable_columns(columns)
+                ]
+                _example = ", ".join(
+                    f"{name}: <value>" for name, _ in (user_cols if user_cols else [("Title", "text")])
+                )
+                return ChatResponse(
+                    intent="chat",
+                    reply=(
+                        f"I couldn't add the item to **{list_name}** right now.\n\n"
+                        f"Please retry with this format:\n"
+                        f"```text\n{_example}\n```"
+                    ),
+                    session_id=session_id,
                 )
         
         # ── UPDATE OPERATION ────────────────────────────────

@@ -81,22 +81,25 @@ class ListService:
         return deleted_count
 
     @handle_sharepoint_errors("add list column")
-    async def add_list_column(self, list_id: str, column) -> Dict[str, Any]:
+    async def add_list_column(self, list_id: str, column, site_id: Optional[str] = None) -> Dict[str, Any]:
         """Add a column to a SharePoint list."""
-        columns_endpoint = f"/sites/{self.graph_client.site_id}/lists/{list_id}/columns"
+        target_site = site_id or self.graph_client.site_id
+        columns_endpoint = f"/sites/{target_site}/lists/{list_id}/columns"
         col_payload = PayloadBuilders.build_column_payload(column)
         return await self.graph_client.post(columns_endpoint, col_payload)
 
     @handle_sharepoint_errors("update list column")
-    async def update_list_column(self, list_id: str, column_id: str, column_updates: dict) -> Dict[str, Any]:
+    async def update_list_column(self, list_id: str, column_id: str, column_updates: dict, site_id: Optional[str] = None) -> Dict[str, Any]:
         """Update a column in a SharePoint list."""
-        endpoint = f"/sites/{self.graph_client.site_id}/lists/{list_id}/columns/{column_id}"
+        target_site = site_id or self.graph_client.site_id
+        endpoint = f"/sites/{target_site}/lists/{list_id}/columns/{column_id}"
         return await self.graph_client.patch(endpoint, column_updates)
 
     @handle_sharepoint_errors("delete list column")
-    async def delete_list_column(self, list_id: str, column_id: str) -> bool:
+    async def delete_list_column(self, list_id: str, column_id: str, site_id: Optional[str] = None) -> bool:
         """Delete a column from a SharePoint list."""
-        endpoint = f"/sites/{self.graph_client.site_id}/lists/{list_id}/columns/{column_id}"
+        target_site = site_id or self.graph_client.site_id
+        endpoint = f"/sites/{target_site}/lists/{list_id}/columns/{column_id}"
         return await self.graph_client.delete(endpoint)
 
     def __init__(self, graph_client: GraphAPIClient):
@@ -146,7 +149,7 @@ class ListService:
         return data
 
     @handle_sharepoint_errors("get list")
-    async def get_list(self, list_id: str) -> SPList:
+    async def get_list(self, list_id: str, site_id: Optional[str] = None) -> SPList:
         """Get a list by ID from SharePoint.
         
         Args:
@@ -155,7 +158,8 @@ class ListService:
         Returns:
             SPList entity
         """
-        endpoint = f"/sites/{self.graph_client.site_id}/lists/{list_id}"
+        target_site = site_id or self.graph_client.site_id
+        endpoint = f"/sites/{target_site}/lists/{list_id}"
         data = await self.graph_client.get(endpoint)
         
         from src.domain.value_objects import SPColumn
@@ -192,17 +196,19 @@ class ListService:
 
     @with_retry(max_attempts=3, service_name="SharePoint List")
     @handle_sharepoint_errors("get list items")
-    async def get_list_items(self, list_id: str) -> List[Dict[str, Any]]:
+    async def get_list_items(self, list_id: str, site_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all items from a SharePoint list with pagination.
         
         Args:
             list_id: SharePoint list ID
+            site_id: Optional site ID override
             
         Returns:
             List of all items
         """
+        target_site = site_id or self.graph_client.site_id
         endpoint = (
-            f"/sites/{self.graph_client.site_id}/lists/{list_id}/items"
+            f"/sites/{target_site}/lists/{list_id}/items"
             f"?expand=fields&$top={SharePointConstants.ITEMS_PER_PAGE}"
         )
         all_items = []

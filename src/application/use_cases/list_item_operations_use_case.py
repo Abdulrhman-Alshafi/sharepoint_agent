@@ -16,6 +16,7 @@ all three for uninterrupted backwards compatibility.
 from src.application.use_cases.list_item_crud_use_case import ListItemCRUDUseCase
 from src.application.use_cases.list_item_batch_use_case import ListItemBatchUseCase
 from src.application.use_cases.list_item_views_use_case import ListItemViewsUseCase
+from typing import Any, Optional
 from src.domain.repositories import IListRepository
 
 
@@ -32,10 +33,10 @@ class ListItemOperationsUseCase(
       - ``ListItemViewsUseCase`` for attachments and views.
     """
 
-    def __init__(self, repository: IListRepository):
+    def __init__(self, repository: IListRepository, permission_repository: Optional[Any] = None):
         # All three parents share the same ``repository`` attribute — one call
         # to the first parent's __init__ is sufficient under CPython MRO.
-        ListItemCRUDUseCase.__init__(self, repository)
+        ListItemCRUDUseCase.__init__(self, repository, permission_repository=permission_repository)
         self._crud = self  # ListItemBatchUseCase uses self._crud internally
 
 

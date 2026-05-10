@@ -131,7 +131,8 @@ class LibraryService:
         Returns:
             Updated library data
         """
-        endpoint = f"/sites/{self.graph_client.site_id}/lists/{library_id}"
+        target_site = site_id or self.graph_client.site_id
+        endpoint = f"/sites/{target_site}/lists/{library_id}"
         
         # Build payload for metadata update
         payload = {}
@@ -183,7 +184,12 @@ class LibraryService:
 
     @handle_sharepoint_errors("add library column")
     async def add_library_column(
-        self, library_id: str, column_name: str, column_type: str, required: bool = False
+        self,
+        library_id: str,
+        column_name: str,
+        column_type: str,
+        required: bool = False,
+        site_id: str = None,
     ) -> Dict[str, Any]:
         """Add a column to a document library.
         
@@ -196,18 +202,25 @@ class LibraryService:
         Returns:
             Created column metadata
         """
-        endpoint = f"/sites/{self.graph_client.site_id}/lists/{library_id}/columns"
+        target_site = site_id or self.graph_client.site_id
+        endpoint = f"/sites/{target_site}/lists/{library_id}/columns"
         
         # Map column types to SharePoint types
         type_mapping = {
             "text": {"text": {}},
+            "note": {"text": {"allowMultipleLines": True}},
             "number": {"number": {}},
             "boolean": {"boolean": {}},
-            "dateTime": {"dateTime": {}},
+            "currency": {"currency": {}},
             "choice": {"choice": {"choices": []}},
             "lookup": {"lookup": {}},
+            "managed_metadata": {"term": {}},
+            "dateTime": {"dateTime": {}},
             "person": {"personOrGroup": {}},
+            "personOrGroup": {"personOrGroup": {}},
             "url": {"hyperlinkOrPicture": {}},
+            "hyperlinkOrPicture": {"hyperlinkOrPicture": {}},
+            "geolocation": {"geolocation": {}},
         }
         
         payload = {
@@ -294,3 +307,33 @@ class LibraryService:
                 "displayName": library.title,
                 "webUrl": data.get("AbsoluteUrl", "") or f"{site_url}/{library.title.replace(' ', '')}"
             }
+
+    async def create_folder(
+        self,
+        library_id: str,
+        folder_name: str,
+        parent_folder_path: str = None,
+        site_id: str = None,
+    ) -> Dict[str, Any]:
+        """Create a folder in a library."""
+        from src.infrastructure.services.sharepoint.drive_service import DriveService
+        drive_service = DriveService(self.graph_client)
+        return await drive_service.create_folder(
+            library_id, folder_name, parent_folder_path, site_id=site_id
+        )
+
+    async def get_folder_contents(
+        self, library_id: str, folder_path: str, site_id: str = None
+    ) -> List[Dict[str, Any]]:
+        """Get contents of a folder in a library."""
+        from src.infrastructure.services.sharepoint.drive_service import DriveService
+        drive_service = DriveService(self.graph_client)
+        return await drive_service.get_folder_contents(library_id, folder_path, site_id=site_id)
+
+    async def delete_folder(
+        self, library_id: str, folder_path: str, site_id: str = None
+    ) -> bool:
+        """Delete a folder and all its contents."""
+        from src.infrastructure.services.sharepoint.drive_service import DriveService
+        drive_service = DriveService(self.graph_client)
+        return await drive_service.delete_folder(library_id, folder_path, site_id=site_id)

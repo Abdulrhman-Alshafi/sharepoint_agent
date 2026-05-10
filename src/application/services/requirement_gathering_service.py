@@ -404,6 +404,29 @@ class RequirementGatheringService:
 
         # Extract library folder preferences
         if resource_type == ResourceType.LIBRARY:
+            if any(p in message_lower for p in [
+                "generate description",
+                "generate a description",
+                "write description",
+                "write a description",
+                "create description",
+                "gentate descrption",
+            ]):
+                extracted["description"] = "AI_GENERATED_DESCRIPTION"
+
+            if any(p in message_lower for p in [
+                "metadata column", "metadata columns", "library columns", "document metadata",
+                "column metadata", "custom columns",
+            ]):
+                extracted["add_metadata_columns"] = "Yes, add metadata columns"
+
+                if any(p in message_lower for p in ["you decide", "you choose", "ai decide", "generate columns"]):
+                    extracted["metadata_columns"] = "AI_GENERATED"
+
+            type_pairs = re.findall(r"([A-Za-z][A-Za-z0-9 _\-]+\s*:\s*[A-Za-z][A-Za-z0-9_\-]*)", message)
+            if type_pairs:
+                extracted["metadata_column_types"] = ", ".join(tp.strip() for tp in type_pairs)
+
             if any(p in message_lower for p in ["with folder", "with folders", "create folders", "add folders", "include folders"]):
                 extracted["create_folders"] = "Yes, create folders now"
                 folder_match = re.search(r"(?:folders?|folder structure)\s*[:\-]?\s*(.+)$", message, re.IGNORECASE)
@@ -450,6 +473,56 @@ class RequirementGatheringService:
             ]
             if any(phrase in answer.lower() for phrase in ai_decide_phrases):
                 return "AI_GENERATED"
+
+        if question.field_name == "metadata_column_types":
+            answer_lower = answer.lower().strip()
+            ai_decide_phrases = [
+                "you decide", "you choose", "you pick", "you select",
+                "you make them", "same as list", "ai decide", "auto",
+                "automatic", "infer types", "generate types",
+            ]
+            if any(phrase in answer_lower for phrase in ai_decide_phrases):
+                return "AI_GENERATED"
+
+            skip_phrases = {"skip", "none", "n/a"}
+            if answer_lower in skip_phrases:
+                return ""
+
+        if question.field_name == "metadata_columns":
+            skip_phrases = {
+                "skip",
+                "skip metadata",
+                "skip metadata columns",
+                "no metadata",
+                "none",
+                "n/a",
+                "dont add",
+                "don't add",
+            }
+            if answer.lower() in skip_phrases:
+                return "SKIP_METADATA_COLUMNS"
+
+            ai_decide_phrases = [
+                "you decide", "you add", "you add them", "you choose", "you pick",
+                "you generate", "you create", "ai decide", "auto", "automatic",
+                "generate them", "decide for me", "you select",
+            ]
+            if any(phrase in answer.lower() for phrase in ai_decide_phrases):
+                return "AI_GENERATED"
+
+        if question.field_name == "description":
+            answer_lower = answer.lower()
+            generate_description_phrases = {
+                "generate description",
+                "generate a description",
+                "ai generate description",
+                "write description",
+                "write a description",
+                "create description",
+                "gentate descrption",
+            }
+            if answer_lower in generate_description_phrases:
+                return "AI_GENERATED_DESCRIPTION"
 
         if question.field_name == "folder_paths":
             answer_lower = answer.lower()
@@ -560,6 +633,20 @@ class RequirementGatheringService:
             True if should skip
         """
         if spec.resource_type == ResourceType.LIBRARY:
+            if question.field_name == "metadata_columns":
+                add_meta = str(spec.collected_fields.get("add_metadata_columns", "")).lower()
+                if "no metadata" in add_meta:
+                    return True
+
+            if question.field_name == "metadata_column_types":
+                add_meta = str(spec.collected_fields.get("add_metadata_columns", "")).lower()
+                if "no metadata" in add_meta:
+                    return True
+
+                metadata_columns = str(spec.collected_fields.get("metadata_columns", "")).strip()
+                if not metadata_columns or metadata_columns == "SKIP_METADATA_COLUMNS" or metadata_columns == "AI_GENERATED":
+                    return True
+
             if question.field_name == "folder_paths":
                 create_folders = str(spec.collected_fields.get("create_folders", "")).lower()
                 if "no folders" in create_folders:

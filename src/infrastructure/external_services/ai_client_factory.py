@@ -188,12 +188,26 @@ def generate_text(prompt: str) -> str:
 
     if _s.AI_PROVIDER.lower() == "gemini":
         from google import genai as _genai
-        _client = _genai.Client(api_key=_s.GEMINI_API_KEY)
-        response = _client.models.generate_content(
-            model=_s.GEMINI_MODEL,
-            contents=prompt,
-        )
-        return response.text or ""
+        try:
+            _client = _genai.Client(api_key=_s.GEMINI_API_KEY)
+            response = _client.models.generate_content(
+                model=_s.GEMINI_MODEL,
+                contents=prompt,
+            )
+            # Check if response was blocked by safety filters
+            if hasattr(response, 'candidates') and response.candidates and hasattr(response.candidates[0], 'finish_reason'):
+                if response.candidates[0].finish_reason == 'SAFETY':
+                    from src.infrastructure.logging import get_logger
+                    logger = get_logger(__name__)
+                    logger.warning("Gemini API blocked response for safety reasons")
+                    return ""
+            result = response.text if hasattr(response, 'text') else ""
+            return result or ""
+        except Exception as e:
+            from src.infrastructure.logging import get_logger
+            logger = get_logger(__name__)
+            logger.error("Gemini API call failed: %s", e)
+            return ""
 
     if _s.AI_PROVIDER.lower() == "vertexai":
         # Reuse the cached wrapper which already has generate_content

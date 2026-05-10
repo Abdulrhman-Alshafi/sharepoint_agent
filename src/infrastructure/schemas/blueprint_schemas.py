@@ -1,6 +1,8 @@
 """Schemas for blueprint generation from AI."""
 
-from pydantic import BaseModel, Field, field_validator
+import json
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional, List, Dict, Any
 from src.domain.entities import ActionType
 
@@ -48,6 +50,7 @@ class SPColumnModel(BaseModel):
             "managedmetadata": "managed_metadata",
             "taxonomy": "managed_metadata",
             "termset": "managed_metadata",
+            "term": "managed_metadata",
             "boolean": "boolean",
             "bool": "boolean",
             "yesno": "boolean",
@@ -76,8 +79,50 @@ class SPListModel(BaseModel):
 
 class WebPartModel(BaseModel):
     type: str
-    properties: Dict[str, Any]
+    properties: Dict[str, Any] = Field(default_factory=dict)
     id: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_webpart_shape(cls, value: Any) -> Any:
+        """Normalize webpart input from common AI variants.
+
+        Handles cases where:
+        - properties key is misspelled/aliased (property, props, config, ...)
+        - properties is a JSON string instead of a dict
+        """
+        if not isinstance(value, dict):
+            return value
+
+        if "properties" not in value:
+            for key in list(value.keys()):
+                key_l = str(key).lower().strip()
+                if key_l in {"property", "props", "config", "configuration"} or key_l.startswith("propert"):
+                    value["properties"] = value[key]
+                    break
+
+        if "properties" not in value:
+            known_top_level = {"type", "id", "order", "webpart_type", "webparttype"}
+            inferred = {
+                k: v for k, v in value.items()
+                if str(k).lower().strip() not in known_top_level
+            }
+            value["properties"] = inferred if isinstance(inferred, dict) else {}
+
+        props = value.get("properties")
+        if props is None:
+            value["properties"] = {}
+            return value
+        if isinstance(props, str):
+            text = props.strip()
+            if text:
+                try:
+                    parsed = json.loads(text)
+                    value["properties"] = parsed if isinstance(parsed, dict) else {"content": text}
+                except Exception:
+                    value["properties"] = {"content": text}
+
+        return value
 
 class SPPageModel(BaseModel):
     title: str
@@ -93,9 +138,41 @@ class CustomWebPartCodeModel(BaseModel):
 class DocumentLibraryModel(BaseModel):
     title: str
     description: str = ""
+    columns: List[SPColumnModel] = []
     content_types: List[str] = []
     seed_data: List[Dict[str, Any]] = []
     action: ActionType = ActionType.CREATE
+
+    @field_validator("columns", mode="before")
+    @classmethod
+    def normalize_library_columns(cls, value: Any) -> Any:
+        """Allow AI to provide library columns as strings or dict objects.
+
+        Example accepted values:
+        - ["Owner", "Review Date"]
+        - ["Owner:personOrGroup", "Review Date:dateTime"]
+        - [{"name": "Owner", "type": "personOrGroup"}]
+        """
+        if not isinstance(value, list):
+            return value
+
+        normalized: List[Dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                normalized.append(item)
+                continue
+
+            if isinstance(item, str):
+                token = item.strip()
+                if not token:
+                    continue
+                if ":" in token:
+                    name, col_type = token.split(":", 1)
+                    normalized.append({"name": name.strip(), "type": col_type.strip() or "text", "required": False})
+                else:
+                    normalized.append({"name": token, "type": "text", "required": False})
+
+        return normalized
 
 class SharePointGroupModel(BaseModel):
     name: str
@@ -116,6 +193,32 @@ class ContentTypeModel(BaseModel):
     parent_type: str = "Item"
     columns: List[str] = []
     action: ActionType = ActionType.CREATE
+
+    @field_validator("columns", mode="before")
+    @classmethod
+    def normalize_columns(cls, value: Any) -> Any:
+        """Allow column arrays from AI as either strings or dict objects.
+
+        Example accepted inputs:
+        - ["policy_owner", "review_date"]
+        - [{"name": "policy_owner", "type": "personOrGroup"}, ...]
+        """
+        if not isinstance(value, list):
+            return value
+
+        normalized: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                if item.strip():
+                    normalized.append(item.strip())
+                continue
+
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("title") or item.get("column")
+                if isinstance(name, str) and name.strip():
+                    normalized.append(name.strip())
+
+        return normalized
 
 class SPViewModel(BaseModel):
     title: str

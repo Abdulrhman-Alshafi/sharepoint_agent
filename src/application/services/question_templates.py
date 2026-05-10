@@ -32,14 +32,6 @@ class QuestionTemplates:
             options=["Team site (sts)", "Communication site (sitepagepublishing)"],
             default_value="Team site (sts)"
         ),
-        Question(
-            field_name="owner_email",
-            question_text="Who should be the primary owner of this site? (Please provide their exact email address)",
-            field_type="text",
-            required=False,
-            default_value="",
-            validation_hint="Optional. If left blank, default settings apply based on permissions."
-        ),
     ]
 
     # List questions
@@ -104,20 +96,11 @@ class QuestionTemplates:
         ),
         Question(
             field_name="sections",
-            question_text="What sections or web parts should this page include?\n\nSay **\"You choose\"** and I'll design the best layout, or list what you want (e.g., 'Hero banner, Quick links, News feed, People').",
+            question_text="What sections or web parts should this page include?\n\nList what you want (e.g., 'Hero banner, Quick links, News feed, People').",
             field_type="text",
             required=False,
-            options=["You choose", "Hero banner, Quick links, News feed", "Hero banner, Text content, People"],
-            default_value="You choose"
-        ),
-        Question(
-            field_name="main_content",
-            question_text="What text or information should appear on this page?\n\nSay **\"Generate it for me\"** and I'll create professional content based on the page's purpose.",
-            field_type="text",
-            required=False,
-            options=["Generate it for me"],
-            default_value="Generate it for me",
-            validation_hint="Describe the main content or provide the actual text, or let AI generate it"
+            options=["Hero banner, Quick links, News feed", "Hero banner, Text content, People"],
+            default_value=""
         ),
         Question(
             field_name="target_site",
@@ -133,7 +116,7 @@ class QuestionTemplates:
     LIBRARY_QUESTIONS: List[Question] = [
         Question(
             field_name="title",
-            question_text="What should this document library be called?\n\nSay **\"Use a default name\"** and I can suggest one based on your purpose.",
+            question_text="What should this document library be called?\n\n",
             field_type="text",
             required=True,
             validation_hint="Library name should describe the documents it will contain"
@@ -143,6 +126,48 @@ class QuestionTemplates:
             question_text="What types of documents will be stored here?\n\nSay **\"Generate description\"** and I'll write one for you.",
             field_type="text",
             required=False,
+            options=["Generate description"],
+            default_value=""
+        ),
+        Question(
+            field_name="add_metadata_columns",
+            question_text=(
+                "Do you want to add metadata columns to this library?\n\n"
+                "Choose **Yes, add metadata columns** or **No metadata columns for now**."
+            ),
+            field_type="choice",
+            required=True,
+            options=["Yes, add metadata columns", "No metadata columns for now"],
+            default_value="No metadata columns for now"
+        ),
+        Question(
+            field_name="metadata_columns",
+            question_text=(
+                "Which metadata columns should this library have?\n\n"
+                "Example: `Document Type, Department, Owner, Review Date`\n"
+                "Or say **\"you decide\"** and I'll generate the best metadata columns with AI.\n"
+                "Or say **\"skip metadata columns\"** to not add any metadata columns."
+            ),
+            field_type="text",
+            required=False,
+            options=["You decide", "Skip metadata columns", "Document Type, Department, Owner, Review Date"],
+            default_value=""
+        ),
+        Question(
+            field_name="metadata_column_types",
+            question_text=(
+                "What data type should each metadata column use?\n\n"
+                "Use list-style format: `ColumnName:type` separated by commas.\n"
+                "Example: `Document Type:choice, Department:text, Owner:personOrGroup, Review Date:dateTime`\n"
+                "Allowed types: `text`, `note`, `number`, `dateTime`, `choice`, `lookup`, `managed_metadata`, `boolean`, `personOrGroup`, `currency`, `hyperlinkOrPicture`, `geolocation`.\n"
+                "Or choose **You make them (same as list format)** and I'll infer the best types."
+            ),
+            field_type="text",
+            required=False,
+            options=[
+                "You make them (same as list format)",
+                "Document Type:choice, Department:text, Owner:personOrGroup, Review Date:dateTime",
+            ],
             default_value=""
         ),
         Question(
@@ -162,7 +187,6 @@ class QuestionTemplates:
                 "List the folders to create.\n\n"
                 "Format options:\n"
                 "- Comma separated: `HR, Finance, Legal`\n"
-                "- One per line\n"
                 "- Nested paths with `/`: `Projects/2026/Q1`, `Projects/2026/Q2`\n\n"
                 "Say **\"Skip folders\"** to continue without folders."
             ),

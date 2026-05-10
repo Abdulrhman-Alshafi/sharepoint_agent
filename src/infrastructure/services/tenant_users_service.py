@@ -96,3 +96,56 @@ class TenantUsersService:
     def clear_cache():
         """Clear the user cache (useful for testing)."""
         _user_cache.update({"ts": 0.0, "users": []})
+
+    @staticmethod
+    async def find_user_by_name(
+        repository: Any,
+        name_query: str,
+        site_id: Optional[str] = None,
+    ) -> Optional[Dict[str, str]]:
+        """Search tenant users by display name (fuzzy match).
+
+        Args:
+            repository: Repository with graph_client/get_site_members
+            name_query: Name or partial name to search for
+            site_id: Optional site ID override
+
+        Returns:
+            First matching user dict {"displayName": ..., "email": ...} or None
+        """
+        if not name_query or not isinstance(name_query, str):
+            return None
+
+        query_lower = name_query.lower().strip()
+        if not query_lower:
+            return None
+
+        users = await TenantUsersService.get_tenant_users(repository, site_id=site_id)
+        if not users:
+            logger.debug("No tenant users available for name search")
+            return None
+
+        # Exact match first
+        for user in users:
+            if user.get("displayName", "").lower() == query_lower:
+                return user
+
+        # Fuzzy match: first/last name or substring
+        for user in users:
+            display = user.get("displayName", "").lower()
+            # Match if query is in display name
+            if query_lower in display:
+                return user
+            # Match if any word in display name matches query
+            for word in display.split():
+                if query_lower == word or query_lower in word:
+                    return user
+
+        return None
+
+    @staticmethod
+    def is_email_like(value: str) -> bool:
+        """Check if a string looks like an email address."""
+        if not isinstance(value, str):
+            return False
+        return "@" in value and "." in value.split("@")[-1]

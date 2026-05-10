@@ -99,18 +99,77 @@ class ListProvisioner:
                             if person_columns:
                                 _principal_repo = principal_resolver_repo or self.repository
                                 resolved_seed = []
+
+                                def _extract_person_email(value: Any) -> str:
+                                    """Extract or resolve email/UPN from person field value."""
+                                    if isinstance(value, str):
+                                        return value.strip()
+                                    if isinstance(value, dict):
+                                        for key in ("email", "mail", "userPrincipalName", "upn", "login"):
+                                            candidate = value.get(key)
+                                            if isinstance(candidate, str) and candidate.strip():
+                                                return candidate.strip()
+                                    return ""
+
+                                async def _resolve_person_value(raw_value: Any, column_name: str) -> Optional[str]:
+                                    """Resolve person value (name or email) to email address.
+                                    
+                                    Tries in order:
+                                    1. Direct extraction (email/UPN)
+                                    2. Name-based lookup in tenant users
+                                    3. Fallback to authenticated user
+                                    """
+                                    from src.infrastructure.services.tenant_users_service import TenantUsersService
+                                    
+                                    resolved_email = _extract_person_email(raw_value)
+                                    
+                                    # If not email-like, try name lookup
+                                    if resolved_email and not TenantUsersService.is_email_like(resolved_email):
+                                        try:
+                                            matched = await TenantUsersService.find_user_by_name(
+                                                _principal_repo,
+                                                resolved_email,
+                                                site_id=site_id,
+                                            )
+                                            if matched and matched.get("email"):
+                                                logger.info(
+                                                    "Resolved person name '%s' → email '%s' for column '%s'",
+                                                    resolved_email,
+                                                    matched["email"],
+                                                    column_name,
+                                                )
+                                                resolved_email = matched["email"]
+                                        except Exception as name_lookup_err:
+                                            logger.debug(
+                                                "Name lookup for '%s' failed: %s",
+                                                resolved_email,
+                                                name_lookup_err,
+                                            )
+                                    
+                                    return resolved_email or None
+
                                 for item in remapped_seed:
                                     resolved_item = {}
                                     for k, v in item.items():
-                                        if k in person_columns and isinstance(v, str) and v:
+                                        if k in person_columns:
+                                            _user_email = await _resolve_person_value(v, k)
+                                            if not _user_email:
+                                                if fallback_user_email:
+                                                    _user_email = fallback_user_email
+                                                else:
+                                                    logger.warning(
+                                                        "No resolvable person value for column '%s' in seed item; skipping field",
+                                                        k,
+                                                    )
+                                                    continue
                                             # Try to resolve email/UPN to SharePoint principal ID
                                             try:
-                                                principal_id = await _principal_repo.ensure_user_principal_id(v, site_id=site_id)
+                                                principal_id = await _principal_repo.ensure_user_principal_id(_user_email, site_id=site_id)
                                                 resolved_item[f"{k}LookupId"] = principal_id
-                                                logger.debug("Resolved person '%s' → principal %d for column '%s'", v, principal_id, k)
+                                                logger.debug("Resolved person '%s' → principal %d for column '%s'", _user_email, principal_id, k)
                                             except Exception as _resolve_err:
                                                 # If seed-data email is invalid, fall back to current authenticated user.
-                                                if fallback_user_email and fallback_user_email.lower() != v.lower():
+                                                if fallback_user_email and fallback_user_email.lower() != _user_email.lower():
                                                     try:
                                                         fallback_principal_id = await _principal_repo.ensure_user_principal_id(
                                                             fallback_user_email, site_id=site_id
@@ -119,20 +178,20 @@ class ListProvisioner:
                                                         logger.info(
                                                             "Resolved fallback user '%s' for unresolved value '%s' in column '%s'",
                                                             fallback_user_email,
-                                                            v,
+                                                            _user_email,
                                                             k,
                                                         )
                                                     except Exception as _fallback_err:
                                                         logger.warning(
                                                             "Could not resolve user '%s' for column '%s': %s; fallback '%s' also failed: %s — skipping field",
-                                                            v,
+                                                            _user_email,
                                                             k,
                                                             _resolve_err,
                                                             fallback_user_email,
                                                             _fallback_err,
                                                         )
                                                 else:
-                                                    logger.warning("Could not resolve user '%s' for column '%s': %s — skipping field", v, k, _resolve_err)
+                                                    logger.warning("Could not resolve user '%s' for column '%s': %s — skipping field", _user_email, k, _resolve_err)
                                         else:
                                             resolved_item[k] = v
                                     resolved_seed.append(resolved_item)

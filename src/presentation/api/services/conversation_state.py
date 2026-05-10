@@ -436,10 +436,10 @@ class ConversationStateService:
                 "library", site_id,
             )
         elif getattr(result_dto, "created_sites", []):
-            name = result_dto.created_sites[0].get(
-                "displayName", result_dto.created_sites[0].get("name", "")
-            )
-            await self.set_last_created(session_id, name, "site", site_id)
+            created_site = result_dto.created_sites[0]
+            name = created_site.get("displayName", created_site.get("name", ""))
+            created_site_id = created_site.get("id") or created_site.get("resource_id") or site_id
+            await self.set_last_created(session_id, name, "site", created_site_id)
 
     # =====================================================================
     # Clear all session state

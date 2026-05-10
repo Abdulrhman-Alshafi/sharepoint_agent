@@ -177,6 +177,7 @@ class DataQueryResponseDTO:
     resource_link: str
     suggested_actions: List[str]
     # Site-context fields
+    source_site_id: str = ""
     source_site_name: str = ""
     source_site_url: str = ""
     source_resource_type: str = ""  # "list" | "library" | ""

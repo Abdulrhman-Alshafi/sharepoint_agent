@@ -53,6 +53,81 @@ def _normalize_folder_paths(value) -> list[str]:
     return paths
 
 
+def _normalize_metadata_columns(value) -> list[str]:
+    """Normalize metadata columns input into ordered unique names."""
+    if not value:
+        return []
+
+    if isinstance(value, list):
+        parts = value
+    else:
+        parts = re.split(r"[\n,;]+", str(value))
+
+    seen = set()
+    cols: list[str] = []
+    for part in parts:
+        name = str(part).strip().strip("`")
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cols.append(name)
+    return cols
+
+
+def _normalize_metadata_type_pairs(value) -> list[str]:
+    """Normalize metadata type pairs into Name:type list format."""
+    if not value:
+        return []
+
+    if isinstance(value, list):
+        parts = value
+    else:
+        parts = re.split(r"[\n,;]+", str(value))
+
+    aliases = {
+        "string": "text",
+        "singleline": "text",
+        "single line": "text",
+        "multiline": "note",
+        "multi line": "note",
+        "date": "dateTime",
+        "datetime": "dateTime",
+        "bool": "boolean",
+        "yesno": "boolean",
+        "person": "personOrGroup",
+        "people": "personOrGroup",
+        "user": "personOrGroup",
+        "url": "hyperlinkOrPicture",
+        "link": "hyperlinkOrPicture",
+        "term": "managed_metadata",
+        "taxonomy": "managed_metadata",
+    }
+
+    normalized: list[str] = []
+    seen = set()
+    for part in parts:
+        token = str(part).strip().strip("`")
+        if not token:
+            continue
+        if ":" not in token:
+            continue
+        name, col_type = token.split(":", 1)
+        name = name.strip()
+        col_type_raw = col_type.strip()
+        if not name or not col_type_raw:
+            continue
+        col_type_norm = aliases.get(col_type_raw.lower(), col_type_raw)
+        key = f"{name.lower()}:{col_type_norm.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(f"{name}:{col_type_norm}")
+    return normalized
+
+
 def build_provisioning_prompt_from_spec(spec) -> str:
     """Convert a ResourceSpecification to a provisioning prompt.
     
@@ -125,7 +200,6 @@ def build_provisioning_prompt_from_spec(spec) -> str:
         title = fields.get("title", "Untitled Page")
         content_type = fields.get("content_type", "")
         sections = fields.get("sections", "")
-        main_content = fields.get("main_content", "")
         
         prompt = f"I need you to CREATE A BRAND NEW SharePoint page called '{title}'."
         if content_type:
@@ -133,9 +207,7 @@ def build_provisioning_prompt_from_spec(spec) -> str:
         
         # Handle sections
         sections_lower = (sections or "").lower().strip()
-        _ai_sections = any(phrase in sections_lower for phrase in [
-            "you choose", "you decide", "ai decide", "auto", "recommend",
-        ]) or not sections_lower
+        _ai_sections = not sections_lower
         
         if _ai_sections:
             prompt += (
@@ -144,20 +216,6 @@ def build_provisioning_prompt_from_spec(spec) -> str:
             )
         else:
             prompt += f" The page should include these sections/web parts: {sections}."
-        
-        # Handle content
-        main_content_lower = (main_content or "").lower().strip()
-        _ai_content = any(phrase in main_content_lower for phrase in [
-            "generate", "you decide", "you choose", "ai", "auto",
-        ]) or not main_content_lower
-        
-        if _ai_content:
-            prompt += (
-                " Generate professional, engaging content for all sections."
-                " Write compelling hero titles, descriptions, and body text."
-            )
-        else:
-            prompt += f" The main content to display is: {main_content}."
             
         prompt += " IMPORTANT: You MUST generate at least one webpart object (type='rte' for text, or suitable types for dashboards) in the webparts array. Set action to CREATE."
         prompt += " Do NOT create any sites, lists, or document libraries — ONLY create the requested page."
@@ -167,15 +225,68 @@ def build_provisioning_prompt_from_spec(spec) -> str:
     elif resource_type == ResourceType.LIBRARY:
         title = fields.get("title", "Untitled Library")
         description = fields.get("description", "")
+        description_lower = str(description).lower().strip()
+        metadata_pref = str(fields.get("add_metadata_columns", "")).lower()
+        metadata_columns = fields.get("metadata_columns", "")
+        metadata_column_types = fields.get("metadata_column_types", "")
+        metadata_column_types_lower = str(metadata_column_types).lower().strip()
+        metadata_column_names = _normalize_metadata_columns(metadata_columns)
+        metadata_type_pairs = _normalize_metadata_type_pairs(metadata_column_types)
         folder_paths = _normalize_folder_paths(fields.get("folder_paths", ""))
         
         prompt = f"I need you to CREATE A BRAND NEW SharePoint document library. The library name is '{title}'."
-        if description:
+        if description and description != "AI_GENERATED_DESCRIPTION":
             prompt += f" Description: {description}."
+        elif description_lower in {
+            "ai_generated_description",
+            "generate description",
+            "generate a description",
+            "write description",
+            "write a description",
+            "create description",
+            "gentate descrption",
+        }:
+            prompt += (
+                " Generate a concise, professional library description based on the library name"
+                " and intended business use."
+            )
         
         # Add versioning if specified
         if fields.get("enable_versioning"):
             prompt += " Enable versioning."
+
+        # Add metadata columns request
+        if "yes" in metadata_pref:
+            if metadata_columns == "SKIP_METADATA_COLUMNS":
+                # Explicit user intent: do not add any metadata columns.
+                pass
+            elif metadata_columns == "AI_GENERATED":
+                prompt += (
+                    " Please generate suitable library metadata columns based on the library name and description."
+                    " Include practical fields like document type, owner, department, and review/expiry dates where relevant."
+                    " Output them in document_libraries[].columns with objects shaped as {name, type, required}."
+                )
+            elif metadata_columns:
+                prompt += f" The library must include these metadata columns: {', '.join(metadata_column_names) if metadata_column_names else metadata_columns}."
+                if metadata_type_pairs:
+                    prompt += (
+                        " Use this exact type format for metadata columns (same format as list columns): "
+                        f"{', '.join(metadata_type_pairs)}."
+                    )
+                elif metadata_column_types_lower == "ai_generated" or any(
+                    phrase in metadata_column_types_lower
+                    for phrase in ["you make them", "you decide", "same as list", "infer types", "generate types"]
+                ):
+                    prompt += (
+                        " Infer the best data type for each metadata column using list-style format Name:type"
+                        " (for example Owner:personOrGroup, Review Date:dateTime)."
+                    )
+                else:
+                    prompt += " Infer practical types for the listed metadata columns if the user did not provide types explicitly."
+
+                prompt += " CRITICAL: Populate document_libraries[].columns with objects {name, type, required}."
+            else:
+                prompt += " Please suggest and add useful metadata columns for this library."
         
         # Add folders to seed_data if specified
         if folder_paths:

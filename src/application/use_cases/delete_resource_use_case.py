@@ -93,7 +93,7 @@ class DeleteResourceUseCase:
         
         if resource_type == "list" and self.list_repository:
             try:
-                list_info = await self.list_repository.get_list(resource_id, site_id)
+                list_info = await self.list_repository.get_list(resource_id)
                 if list_info:
                     item_count = list_info.item_count
                     data_loss_summary = f"{item_count} list items will be moved to recycle bin"
@@ -139,7 +139,7 @@ class DeleteResourceUseCase:
             elif resource_type == "list" and self.list_repository:
                 return await self.list_repository.delete_list(resource_id, site_id)
             elif resource_type == "page" and self.page_repository:
-                return await self.page_repository.delete_page(resource_id)
+                return await self.page_repository.delete_page(site_id, resource_id)
             elif resource_type == "library" and self.library_repository:
                 return await self.library_repository.delete_document_library(resource_id, site_id=site_id)
             else:

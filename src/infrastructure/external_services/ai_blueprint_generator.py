@@ -36,11 +36,15 @@ SYSTEM_PROMPT = (
     "NEW SITES: When a user asks to 'create a site', 'workspace', or 'intranet', populate the 'sites' array. "
     "Each site needs a 'title', 'name' (url slug), 'description', and 'template' (either 'sts' for Team site or 'sitepagepublishing' for Communication site). \n\n"
     "PAGES & WEBPARTS: Every site MUST include at least 2-3 pages in the 'pages' array. "
+    "Each page MUST have a clear 'title' (e.g., 'Home', 'About Us', 'News', 'Resources'). "
     "Each page MUST have at least 1 webpart. Use a Hero webpart on home pages, Text webparts for content pages. "
     "Always set webpart 'type' to one of: Text, Hero, Image, QuickLinks, News, People, List, DocumentLibrary, Events. "
-    "Never leave the 'webparts' array empty on any page.\n\n"
+    "Never leave the 'webparts' array empty on any page, and never leave the page 'title' empty.\n\n"
     "DOCUMENT LIBRARIES: When any request involves file storage, uploads, documents, or attachments, "
-    "use 'document_libraries' (not 'lists'). A document library uses template 'documentLibrary'. \n\n"
+    "use 'document_libraries' (not 'lists'). A document library uses template 'documentLibrary'. "
+    "When metadata fields are requested, populate document_libraries[].columns with typed objects in this shape: "
+    "{'name': 'Owner', 'type': 'personOrGroup', 'required': false}. "
+    "Do not leave metadata columns only in plain text; always place them in document_libraries[].columns. \n\n"
     "FOLDER CREATION IN LIBRARIES: When the user specifies folders to create (e.g., 'create HR, Finance, Legal folders'), "
     "you MUST populate the library's seed_data array with folder entries. Each folder entry MUST have: "
     "{'type': 'folder_path', 'name': 'FolderName'} or for nested paths {'type': 'folder_path', 'name': 'Parent/Child/Nested'}. "
@@ -217,6 +221,17 @@ class GeminiAIBlueprintGenerator(BlueprintGeneratorService):
                 DocumentLibrary(
                     title=lib.title,
                     description=lib.description,
+                    columns=[
+                        SPColumn(
+                            name=col.name,
+                            type=col.type,
+                            required=col.required,
+                            choices=col.choices,
+                            lookup_list=col.lookup_list,
+                            term_set_id=col.term_set_id,
+                        )
+                        for col in getattr(lib, "columns", [])
+                    ],
                     content_types=lib.content_types,
                     seed_data=lib.seed_data,
                     action=lib.action

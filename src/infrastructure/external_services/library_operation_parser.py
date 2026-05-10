@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class LibraryOperation(BaseModel):
     """Structured representation of a library operation."""
-    operation: Literal["create", "get", "list", "delete", "add_column", "get_schema", "update_settings", "add_folder", "upload_file"] = Field(
-        description="Type of operation: create, get, list, delete, add_column, get_schema, update_settings, add_folder, upload_file"
+    operation: Literal["create", "get", "list", "delete", "add_column", "get_schema", "update_settings", "add_folder", "upload_file", "delete_folder", "delete_file"] = Field(
+        description="Type of operation: create, get, list, delete, add_column, get_schema, update_settings, add_folder, upload_file, delete_folder, delete_file"
     )
     library_name: Optional[str] = Field(
         default=None,
@@ -90,6 +90,7 @@ class LibraryOperationParserService:
     LIBRARY_OPERATION_PROMPT = (
         "You are a SharePoint document library operation parser. Extract structured information from user requests "
         "to create, view, configure, or delete document libraries.\n\n"
+        "Treat these user terms as equivalent when parsing: library, lib, doc lib, document lib, doc library.\n\n"
         "Operation types:\n"
         "- 'create': Creating a new document library\n"
         "- 'get': Getting details of a specific library\n"
@@ -98,16 +99,23 @@ class LibraryOperationParserService:
         "- 'add_column': Adding a column to a library\n"
         "- 'get_schema': Getting the structure/schema of a library\n"
         "- 'update_settings': Updating library settings (versioning, etc.)\n\n"
-                "- 'add_folder': Adding a folder to an existing library\n"
-                "- 'upload_file': Uploading a file to a library (may prompt for folder selection)\n\n"
+        "- 'add_folder': Adding a folder to an existing library\n"
+        "- 'upload_file': Uploading a file to a library (may prompt for folder selection)\n"
+        "- 'delete_folder': Deleting a folder from a library\n"
+        "- 'delete_file': Deleting a file from a library\n\n"
         "Extract:\n"
         "1. The operation type\n"
         "2. The library name\n"
         "3. Description if creating a library\n"
         "4. Versioning settings (enable_versioning, enable_minor_versions, major_version_limit)\n"
         "5. Column details if adding columns\n\n"
-        "6. folder_paths for create requests when folders are mentioned\n\n"
+        "6. folder_paths for create/add/delete folder requests when folders are mentioned\n"
+        "7. file_path for delete_file requests\n\n"
         "Examples:\n"
+        "- 'Create a lib called Project Files'\n"
+        "  → operation='create', library_name='Project Files', enable_versioning=True\n"
+        "- 'Create a doc lib for HR policies'\n"
+        "  → operation='create', library_name='HR policies', enable_versioning=True\n"
         "- 'Create a document library called Project Files'\n"
         "  → operation='create', library_name='Project Files', enable_versioning=True\n"
         "- 'Create a library for HR Documents with versioning enabled'\n"
@@ -128,8 +136,14 @@ class LibraryOperationParserService:
                     "  → operation='add_folder', library_name='Documents', folder_name='HR'\n"
                 "- 'I want to add the folder Projects/2026 to the Team Files library'\n"
                     "  → operation='add_folder', library_name='Team Files', folder_paths=['Projects/2026']\n"
-                "- 'Upload a file to my Documents library'\n"
-                    "  → operation='upload_file', library_name='Documents'\n"
+            "- 'Upload a file to my Documents library'\n"
+            "  → operation='upload_file', library_name='Documents'\n"
+            "- 'Delete the HR folder from Documents library'\n"
+            "  → operation='delete_folder', library_name='Documents', folder_name='HR'\n"
+            "- 'Delete Projects/2026 folder from Team Files library'\n"
+            "  → operation='delete_folder', library_name='Team Files', folder_paths=['Projects/2026']\n"
+            "- 'Delete Budget.xlsx from Finance library'\n"
+            "  → operation='delete_file', library_name='Finance', file_path='Budget.xlsx'\n"
     )
 
     @staticmethod

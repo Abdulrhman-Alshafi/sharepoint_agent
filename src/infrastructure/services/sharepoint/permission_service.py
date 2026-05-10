@@ -419,7 +419,7 @@ class PermissionService:
         return data.get("d", {}).get("results", [])
 
     @handle_sharepoint_errors("ensure user principal")
-    async def ensure_user_principal_id(self, user_email: str) -> int:
+    async def ensure_user_principal_id(self, user_email: str, site_id: str = None) -> int:
         """Ensure a user exists in the site user collection and return their numeric principal ID.
 
         Uses the SharePoint REST ensureuser endpoint which adds the user if not already
@@ -433,7 +433,7 @@ class PermissionService:
         """
         login_name = user_email if user_email.startswith("i:0#") else f"i:0#.f|membership|{user_email}"
         payload = {"logonName": login_name}
-        data = await self.rest_client.post("/_api/web/ensureuser", payload)
+        data = await self.rest_client.post("/_api/web/ensureuser", payload, site_id=site_id)
         principal_id = data.get("d", data).get("Id")
         if principal_id is None:
             raise ValueError(f"Could not resolve principal ID for user '{user_email}'.")

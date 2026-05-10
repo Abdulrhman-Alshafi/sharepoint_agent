@@ -120,7 +120,8 @@ class PageService:
                 update_payload = {
                     "canvasLayout": canvas_layout
                 }
-                update_endpoint = f"/sites/{target_site_id}/pages/{page_id}/microsoft.graph.sitePage"
+                # Use /pages/{id} endpoint for PATCH (not /microsoft.graph.sitePage cast)
+                update_endpoint = f"/sites/{target_site_id}/pages/{page_id}"
                 update_result = await self.graph_client.patch(update_endpoint, update_payload)
                 logger.debug("Webparts update result: %s", update_result)
             except Exception as e:
@@ -256,14 +257,13 @@ class PageService:
         webparts_list = CanvasContentBuilder.build_graph_webparts(webparts)
         
         # Return the horizontalSections structure expected by modern Pages API
+        # Note: Do NOT include "id" fields - Graph API will handle those
         return {
             "horizontalSections": [
                 {
                     "layout": "oneColumn",
-                    "id": "1",
                     "columns": [
                         {
-                            "id": "1",
                             "width": 12,
                             "webparts": webparts_list
                         }

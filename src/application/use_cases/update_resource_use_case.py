@@ -113,9 +113,27 @@ class UpdateResourceUseCase:
                                resource_id: str, modifications: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the update operation."""
         if resource_type == "list":
-            # Convert the modifications dict into an SPList entity before calling the repository.
-            title = modifications.get("title", modifications.get("displayName", ""))
-            description = modifications.get("description", "")
+            # IMPORTANT: avoid implicit schema sync on metadata-only updates.
+            # Updating name/description should not touch columns.
+            metadata_payload: Dict[str, Any] = {}
+            if "displayName" in modifications or "title" in modifications:
+                metadata_payload["displayName"] = modifications.get("displayName") or modifications.get("title")
+            if "description" in modifications:
+                metadata_payload["description"] = modifications.get("description")
+
+            if metadata_payload:
+                target_site = site_id or self.list_repository.graph_client.site_id
+                endpoint = f"/sites/{target_site}/lists/{resource_id}"
+                return await self.list_repository.graph_client.patch(endpoint, metadata_payload)
+
+            # Explicit add-column operation.
+            add_column = modifications.get("add_column")
+            if isinstance(add_column, dict) and add_column.get("name"):
+                col_type = add_column.get("type", "text")
+                column = SPColumn(name=add_column["name"], type=col_type, required=False)
+                return await self.list_repository.add_list_column(resource_id, column, site_id=site_id)
+
+            # Full schema update path (only when explicit columns are supplied).
             raw_columns = modifications.get("columns")
             if raw_columns and isinstance(raw_columns, list):
                 columns = [
@@ -123,7 +141,10 @@ class UpdateResourceUseCase:
                     for c in raw_columns
                 ]
             else:
-                columns = [SPColumn(name="Title", type="text", required=False)]
+                raise ValueError("No supported list update operation provided.")
+
+            title = modifications.get("title", modifications.get("displayName", ""))
+            description = modifications.get("description", "")
             sp_list_entity = SPList(
                 title=title or "Updated List",
                 description=description,

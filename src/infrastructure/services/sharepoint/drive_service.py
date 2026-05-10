@@ -29,16 +29,18 @@ class DriveService:
         self.graph_client = graph_client
 
     @handle_sharepoint_errors("get library drive ID")
-    async def get_library_drive_id(self, library_id: str) -> str:
+    async def get_library_drive_id(self, library_id: str, site_id: Optional[str] = None) -> str:
         """Get the drive ID for a document library.
         
         Args:
             library_id: SharePoint list ID of the document library
+            site_id: Optional site ID override
             
         Returns:
             Drive ID corresponding to the library
         """
-        endpoint = f"/sites/{self.graph_client.site_id}/lists/{library_id}/drive"
+        target_site = site_id or self.graph_client.site_id
+        endpoint = f"/sites/{target_site}/lists/{library_id}/drive"
         data = await self.graph_client.get(endpoint)
         return data.get("id", "")
 
@@ -561,7 +563,8 @@ class DriveService:
         self,
         library_id: str,
         folder_name: str,
-        parent_folder_path: Optional[str] = None
+        parent_folder_path: Optional[str] = None,
+        site_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a folder in a library.
         
@@ -569,11 +572,12 @@ class DriveService:
             library_id: Library ID
             folder_name: Folder name
             parent_folder_path: Parent folder path
+            site_id: Optional site ID override
             
         Returns:
             Created folder metadata
         """
-        drive_id = await self.get_library_drive_id(library_id)
+        drive_id = await self.get_library_drive_id(library_id, site_id=site_id)
         
         if parent_folder_path:
             endpoint = f"/drives/{drive_id}/root:/{parent_folder_path}:/children"
@@ -589,18 +593,31 @@ class DriveService:
         return await self.graph_client.post(endpoint, payload)
 
     @handle_sharepoint_errors("delete folder")
-    async def delete_folder(self, drive_id: str, folder_id: str) -> bool:
+    async def delete_folder(self, drive_id: str = None, folder_id: str = None, library_id: str = None, folder_path: str = None, site_id: Optional[str] = None) -> bool:
         """Delete a folder.
         
         Args:
-            drive_id: Drive ID
-            folder_id: Folder ID
+            drive_id: Drive ID (legacy)
+            folder_id: Folder ID (legacy)
+            library_id: Library ID (new)
+            folder_path: Folder path (new)
+            site_id: Optional site ID
             
         Returns:
             True if successful
         """
-        endpoint = f"/drives/{drive_id}/items/{folder_id}"
-        return await self.graph_client.delete(endpoint)
+        # Handle new signature (library_id + folder_path)
+        if library_id and folder_path:
+            drive_id = await self.get_library_drive_id(library_id, site_id=site_id)
+            endpoint = f"/drives/{drive_id}/root:/{folder_path}"
+            return await self.graph_client.delete(endpoint)
+        
+        # Handle legacy signature (drive_id + folder_id)
+        if drive_id and folder_id:
+            endpoint = f"/drives/{drive_id}/items/{folder_id}"
+            return await self.graph_client.delete(endpoint)
+        
+        return False
 
     @handle_sharepoint_errors("get folder contents")
     async def get_folder_contents(

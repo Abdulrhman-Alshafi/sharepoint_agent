@@ -48,6 +48,30 @@ class LibraryProvisioner:
                         lib_title_to_id[library.title] = lib_id
                     resource_links.append(result.get("resource_link", ""))
 
+                    # Create metadata columns for the newly created library when provided.
+                    if lib_id and getattr(library, "columns", None):
+                        for col in library.columns:
+                            col_name = getattr(col, "name", "")
+                            if not col_name or col_name.lower() == "title":
+                                continue
+                            col_type = getattr(col, "type", "text") or "text"
+                            col_required = bool(getattr(col, "required", False))
+                            try:
+                                await self.repository.add_library_column(
+                                    lib_id,
+                                    col_name,
+                                    col_type,
+                                    required=col_required,
+                                    site_id=site_id,
+                                )
+                            except Exception as col_err:
+                                warning_msg = (
+                                    f"Could not create metadata column '{col_name}' in library "
+                                    f"'{library.title}': {col_err}"
+                                )
+                                logger.warning("%s", warning_msg)
+                                warnings.append(warning_msg)
+
                     # Seed folders and files if provided
                     if library.seed_data and lib_id:
                         folder_entries = [

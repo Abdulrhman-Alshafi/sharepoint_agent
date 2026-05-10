@@ -240,11 +240,133 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
                 )
             
             library_id = matched_lib.get('id')
-            await list_repository.delete_list(library_id, site_id=site_id)
+            await list_repository.delete_list(library_id, site_id=_lib_site_id)
             
             return ChatResponse(
                 intent="chat",
                 reply=f"✅ Library **{operation.library_name}** deleted successfully!"
+            )
+
+        # ── DELETE FOLDER FROM LIBRARY ─────────────────────
+        elif operation.operation == "delete_folder":
+            if not operation.library_name:
+                return ChatResponse(
+                    intent="chat",
+                    reply="⚠️ Please specify the library name.\n\nExample: 'Delete HR folder from Documents library'"
+                )
+
+            folder_target = None
+            if operation.folder_paths:
+                folder_target = (operation.folder_paths[0] or "").strip()
+            if not folder_target and operation.folder_name:
+                folder_target = operation.folder_name.strip()
+
+            if not folder_target:
+                return ChatResponse(
+                    intent="chat",
+                    reply="⚠️ Please specify which folder to delete.\n\nExample: 'Delete HR folder from Documents library'"
+                )
+
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
+            matched_lib = next(
+                (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
+                None
+            )
+
+            if not matched_lib:
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"❌ Library '{operation.library_name}' not found."
+                )
+
+            library_id = matched_lib.get('id')
+            lib_name = matched_lib.get('displayName', 'Unknown')
+            normalized_folder = folder_target.strip().strip("/")
+
+            deleted = await library_repository.delete_folder(
+                library_id,
+                normalized_folder,
+                site_id=_lib_site_id,
+            )
+
+            if deleted:
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"✅ Folder **{normalized_folder}** deleted from **{lib_name}**."
+                )
+
+            return ChatResponse(
+                intent="chat",
+                reply=f"❌ I couldn't delete folder '{normalized_folder}' from **{lib_name}**."
+            )
+
+        # ── DELETE FILE FROM LIBRARY ───────────────────────
+        elif operation.operation == "delete_file":
+            if not operation.library_name:
+                return ChatResponse(
+                    intent="chat",
+                    reply="⚠️ Please specify the library name.\n\nExample: 'Delete Budget.xlsx from Finance library'"
+                )
+
+            if not operation.file_path:
+                return ChatResponse(
+                    intent="chat",
+                    reply="⚠️ Please specify the file name/path to delete.\n\nExample: 'Delete Budget.xlsx from Finance library'"
+                )
+
+            libraries = await library_repository.get_all_document_libraries(site_id=_lib_site_id)
+            matched_lib = next(
+                (lib for lib in libraries if operation.library_name.lower() in lib.get('displayName', '').lower()),
+                None
+            )
+
+            if not matched_lib:
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"❌ Library '{operation.library_name}' not found."
+                )
+
+            library_id = matched_lib.get('id')
+            lib_name = matched_lib.get('displayName', 'Unknown')
+
+            raw_path = operation.file_path.strip().strip("/")
+            if "/" in raw_path:
+                folder_path, file_name = raw_path.rsplit("/", 1)
+            else:
+                folder_path, file_name = None, raw_path
+
+            drive_id = await drive_repository.get_library_drive_id(library_id, site_id=_lib_site_id)
+            children = await drive_repository.get_folder_contents(
+                drive_id,
+                folder_path=folder_path,
+            )
+
+            target_file = next(
+                (
+                    item for item in (children or [])
+                    if not item.get("folder")
+                    and (item.get("name", "").strip().lower() == file_name.lower())
+                ),
+                None,
+            )
+
+            if not target_file:
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"❌ File '{file_name}' was not found in **{lib_name}**."
+                )
+
+            file_id = target_file.get("id")
+            deleted = await drive_repository.delete_file(file_id, drive_id)
+            if deleted:
+                return ChatResponse(
+                    intent="chat",
+                    reply=f"✅ File **{file_name}** deleted from **{lib_name}**."
+                )
+
+            return ChatResponse(
+                intent="chat",
+                reply=f"❌ I couldn't delete file '{file_name}' from **{lib_name}**."
             )
         
         # ── GET SCHEMA OPERATION ────────────────────────────
@@ -464,7 +586,7 @@ async def handle_library_operations(message: str, session_id: str, site_id: str,
             return ChatResponse(
                 intent="chat",
                 reply=f"⚠️ Operation '{operation.operation}' is not yet fully implemented.\n\n"
-                       f"Supported operations: create, list, get, delete, get_schema, add_column, add_folder, upload_file"
+                       f"Supported operations: create, list, get, delete, get_schema, add_column, add_folder, upload_file, delete_folder, delete_file"
             )
     
     except Exception as e:

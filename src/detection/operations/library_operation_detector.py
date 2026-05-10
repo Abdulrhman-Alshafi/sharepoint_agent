@@ -16,14 +16,28 @@ logger = logging.getLogger(__name__)
 
 _LIBRARY_EXPLICIT_PHRASES = (
     "document library",
+    "document lib",
+    "doc library",
+    "doc lib",
+    "create a library", "create library",
+    "create a lib", "create lib",
+    "create a document library", "create document library",
+    "create a doc lib", "create doc lib",
+    "new library", "new doc lib", "new document library",
     "show libraries", "show all libraries", "list libraries",
+    "show libs", "list libs", "show all libs",
     "show me libraries", "show me all libraries",
     "delete library", "remove library",
+    "delete lib", "remove lib",
     "library settings", "enable versioning", "library versioning",
+    "lib settings", "document lib settings",
     "add column to library", "library schema", "library structure",
+    "add column to lib", "lib schema", "lib structure",
     "add folder to library", "create folder in library", "add a folder to",
+    "add folder to lib", "create folder in lib",
     "upload file", "add file", "upload document", "add document",
     "upload to library", "add to library",
+    "upload to lib", "add to lib",
 )
 
 _LIBRARY_KEYWORDS = ("library",)

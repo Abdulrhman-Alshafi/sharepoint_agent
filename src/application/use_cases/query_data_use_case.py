@@ -39,6 +39,7 @@ class QueryDataUseCase:
             source_list=result.source_list,
             resource_link=result.resource_link,
             suggested_actions=result.suggested_actions,
+            source_site_id=result.source_site_id,
             source_site_name=result.source_site_name,
             source_site_url=result.source_site_url,
             source_resource_type=result.source_resource_type,

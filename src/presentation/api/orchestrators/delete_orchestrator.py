@@ -19,6 +19,8 @@ def _resolve_last_resource_from_history(history: List[Dict[str, Any]]) -> Tuple[
     Returns (resource_name, resource_type) or ("", "") if nothing found.
     """
     _PATTERNS = [
+        # ✅ Successfully started provisioning 'thesite' site!
+        (re.compile(r"Successfully\s+started\s+provisioning\s+['\"](.+?)['\"]\s+site", re.I), "site"),
         # ✅ Successfully created 'Project tracker' list!
         (re.compile(r"Successfully created ['\"](.+?)['\"](?:\s*(list|page|library|site))?", re.I), "list"),
         # ✅ Document library theColors created successfully!
@@ -47,26 +49,23 @@ def _resolve_last_resource_from_history(history: List[Dict[str, Any]]) -> Tuple[
     return "", ""
 
 
+def _normalize_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _extract_quoted_resource_name(message: str) -> str:
+    m = re.search(r"['\"]([^'\"]+)['\"]", message or "")
+    return (m.group(1) or "").strip() if m else ""
+
+
 async def handle_delete_operations(message: str, session_id: str, site_id: str, provisioning_service: ProvisioningApplicationService, user_email: str = None, user_login_name: str = None, user_token: str = None, history: List[Dict[str, Any]] = None, last_created: tuple = None) -> ChatResponse:
     """Handle resource deletion requests with impact analysis."""
     from src.presentation.api import get_site_repository, get_list_repository, get_page_repository, get_library_repository, get_permission_repository, get_enterprise_repository
     from src.domain.exceptions import PermissionDeniedException
     from src.application.use_cases.delete_resource_use_case import DeleteResourceUseCase
+    from src.infrastructure.external_services.site_resolver import SiteResolver
     
     try:
-        site_repository = get_site_repository(user_token=user_token)
-        list_repository = get_list_repository(user_token=user_token)
-        page_repository = get_page_repository(user_token=user_token)
-        library_repository = get_library_repository(user_token=user_token)
-        permission_repository = get_permission_repository(user_token=user_token)
-        enterprise_repository = get_enterprise_repository(user_token=user_token)
-        delete_use_case = DeleteResourceUseCase(
-            list_repository=list_repository,
-            site_repository=site_repository,
-            page_repository=page_repository,
-            library_repository=library_repository
-        )
-        
         message_lower = message.lower()
         message_tokens = set(message_lower.split())
         # Tracks the effective site for this delete.
@@ -74,8 +73,49 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
         # correctly targets IT Support without needing a pronoun.
         _delete_site_id = (last_created[2] if (last_created and len(last_created) > 2 and last_created[2]) else None) or site_id
 
+        # If the user explicitly mentions a site in the delete command, prefer it.
+        try:
+            _site_repo_for_resolution = get_site_repository(user_token=user_token)
+            _explicit_site = SiteResolver.extract_site_mention(message)
+            if _explicit_site:
+                _all_sites = await _site_repo_for_resolution.get_all_sites()
+                _resolved = SiteResolver.resolve_site_name(_explicit_site, _all_sites)
+                if _resolved and _resolved[0]:
+                    _delete_site_id = _resolved[0]
+                    logger.info(
+                        "Delete operation site override: '%s' -> %s (ID: %s)",
+                        _explicit_site,
+                        _resolved[1],
+                        _delete_site_id,
+                    )
+        except Exception:
+            # Non-fatal: fall back to previously selected context site.
+            pass
+
+        # Instantiate repositories against the effective site context.
+        site_repository = get_site_repository(user_token=user_token, site_id=_delete_site_id)
+        list_repository = get_list_repository(user_token=user_token, site_id=_delete_site_id)
+        page_repository = get_page_repository(user_token=user_token, site_id=_delete_site_id)
+        library_repository = get_library_repository(user_token=user_token, site_id=_delete_site_id)
+        permission_repository = get_permission_repository(user_token=user_token, site_id=_delete_site_id)
+        enterprise_repository = get_enterprise_repository(user_token=user_token, site_id=_delete_site_id)
+        delete_use_case = DeleteResourceUseCase(
+            list_repository=list_repository,
+            site_repository=site_repository,
+            page_repository=page_repository,
+            library_repository=library_repository
+        )
+
+        # ── Guard: if last_created is a PAGE and message has "page" keyword, skip item parsing ──
+        _last_created_is_page = last_created and len(last_created) > 1 and last_created[1] == "page"
+        _message_mentions_page = "page" in message_lower or "site page" in message_lower or "site pages" in message_lower
+        
+        # If we have a pronoun reference to a page, don't parse as item operation
+        if _last_created_is_page and _message_mentions_page:
+            # Let it fall through to page deletion handling
+            pass
         # ── Guard: "delete list item" / "delete item from list" must go to item_handler ──
-        if ("item" in message_tokens or "items" in message_tokens
+        elif ("item" in message_tokens or "items" in message_tokens
                 or "list item" in message_lower or "record" in message_tokens):
             from src.presentation.api.orchestrators.item_orchestrator import handle_item_operations
             return await handle_item_operations(message, session_id, _delete_site_id, user_token=user_token, last_created=last_created)
@@ -113,12 +153,32 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
             # Resolve page ID by searching for the page name in the message
             try:
                 pages = await page_repository.get_all_pages(site_id=_delete_site_id)
+                # Normalize message for fuzzy matching (handle spaces vs hyphens)
+                msg_normalized = message_lower.replace("-", " ").replace("_", " ")
+                msg_tokens = set(w for w in msg_normalized.split() if len(w) > 2)
+                
+                best_match = None
+                best_match_len = 0
+                
                 for page in pages:
-                    page_name = (page.get("name") or page.get("title") or "").lower().replace(".aspx", "")
-                    if page_name and page_name in message_lower:
-                        resource_id = page.get("id")
-                        resource_name = page.get("name") or page.get("title")
-                        break
+                    page_name_raw = (page.get("name") or page.get("title") or "").lower().replace(".aspx", "")
+                    page_name_norm = page_name_raw.replace("-", " ").replace("_", " ")
+                    page_tokens = set(w for w in page_name_norm.split() if len(w) > 2)
+                    
+                    # Direct match (exact or substring)
+                    if page_name_raw and (page_name_raw in message_lower or page_name_norm in msg_normalized):
+                        if len(page_name_raw) > best_match_len:
+                            best_match = page
+                            best_match_len = len(page_name_raw)
+                    # Token overlap match (handle "The Tester VK" vs "the-tester-vk")
+                    elif page_tokens and page_tokens.issubset(msg_tokens) and len(page_tokens) >= 1:
+                        if len(page_name_raw) > best_match_len:
+                            best_match = page
+                            best_match_len = len(page_name_raw)
+                
+                if best_match:
+                    resource_id = best_match.get("id")
+                    resource_name = best_match.get("name") or best_match.get("title")
             except Exception:
                 pass
         elif "library" in message_lower:
@@ -150,23 +210,45 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
             # Resolve site ID from sites
             try:
                 all_sites = await site_repository.get_all_sites()
+                quoted_name = _extract_quoted_resource_name(message)
+                message_norm = _normalize_match_text(quoted_name or message_lower)
+                best_match = None
+                best_match_len = 0
                 for site in all_sites:
                     if isinstance(site, dict):
                         site_name_val = site.get("name", "")
                         site_display_name_val = site.get("displayName", "")
+                        site_web_url_val = site.get("webUrl", "")
                         site_id_val = site.get("id")
                     else:
                         site_name_val = getattr(site, "name", "")
                         site_display_name_val = getattr(site, "displayName", "")
+                        site_web_url_val = getattr(site, "webUrl", "")
                         site_id_val = getattr(site, "id", None)
-                        
+
                     site_name = (site_name_val or "").lower()
                     site_display = (site_display_name_val or "").lower()
-                    
-                    if (site_name and site_name in message_lower) or (site_display and site_display in message_lower):
-                        resource_id = site_id_val
-                        resource_name = site_display_name_val or site_name_val
-                        break
+                    site_slug = ((site_web_url_val or "").rstrip("/").split("/")[-1]).lower()
+                    candidate_names = [site_name, site_display, site_slug]
+
+                    for candidate in candidate_names:
+                        candidate_norm = _normalize_match_text(candidate)
+                        if not candidate_norm:
+                            continue
+                        direct = candidate in message_lower
+                        normalized = candidate_norm == message_norm or candidate_norm in message_norm or message_norm in candidate_norm
+                        if (direct or normalized) and len(candidate_norm) > best_match_len:
+                            best_match = site
+                            best_match_len = len(candidate_norm)
+                            break
+
+                if best_match:
+                    if isinstance(best_match, dict):
+                        resource_id = best_match.get("id")
+                        resource_name = best_match.get("displayName") or best_match.get("name") or quoted_name
+                    else:
+                        resource_id = getattr(best_match, "id", None)
+                        resource_name = getattr(best_match, "displayName", "") or getattr(best_match, "name", "") or quoted_name
             except Exception:
                 pass
         else:
@@ -231,24 +313,31 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                         try:
                             _all_sites = await site_repository.get_all_sites()
                             _hist_lower = hist_name.lower()
-                            _hist_compact = _hist_lower.replace(" ", "")
+                            _hist_compact = _normalize_match_text(_hist_lower)
                             _best_site = None
                             _best_len = 0
                             for _st in _all_sites:
                                 _dn = (_st.get("displayName") or "").lower()
                                 _nm = (_st.get("name") or "").lower()
-                                _dn_compact = _dn.replace(" ", "")
-                                _nm_compact = _nm.replace(" ", "")
+                                _slug = ((_st.get("webUrl") or "").rstrip("/").split("/")[-1]).lower()
+                                _dn_compact = _normalize_match_text(_dn)
+                                _nm_compact = _normalize_match_text(_nm)
+                                _slug_compact = _normalize_match_text(_slug)
                                 _exact = _dn == _hist_lower or _nm == _hist_lower or _dn_compact == _hist_compact or _nm_compact == _hist_compact
-                                _partial = (_hist_lower and (_hist_lower in _dn or _hist_lower in _nm))
-                                _score_len = max(len(_dn), len(_nm))
-                                if (_exact or _partial) and _score_len > _best_len:
+                                _slug_match = _slug and (_slug == _hist_lower or _slug_compact == _hist_compact)
+                                _partial = (_hist_lower and (_hist_lower in _dn or _hist_lower in _nm or _hist_lower in _slug))
+                                _score_len = max(len(_dn), len(_nm), len(_slug))
+                                if (_exact or _slug_match or _partial) and _score_len > _best_len:
                                     _best_site = _st
                                     _best_len = _score_len
                             if _best_site:
                                 resource_type = "site"
                                 resource_id = _best_site.get("id")
                                 resource_name = _best_site.get("displayName") or _best_site.get("name") or hist_name
+                            elif last_created and len(last_created) > 2 and last_created[2]:
+                                resource_type = "site"
+                                resource_id = last_created[2]
+                                resource_name = hist_name
                         except Exception:
                             pass
                     elif _hist_type_lower == "library":
@@ -297,6 +386,12 @@ async def handle_delete_operations(message: str, session_id: str, site_id: str, 
                             pass
 
             if not resource_id or not resource_name:
+                if resource_type == "site" or "site" in message_lower:
+                    return ChatResponse(
+                        intent="delete",
+                        reply="I couldn't resolve which site to delete yet. The site may still be propagating in SharePoint. Try again in a moment, or say the exact site name.",
+                        session_id=session_id,
+                    )
                 # If we couldn't resolve any resource (list, page, library, site), it might be an item!
                 from src.presentation.api.orchestrators.item_orchestrator import handle_item_operations
                 return await handle_item_operations(message, session_id, _delete_site_id, user_token=user_token, last_created=last_created)

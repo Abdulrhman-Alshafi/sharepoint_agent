@@ -64,11 +64,6 @@ class PageProvisioner:
                 if sp_page.action == ActionType.CREATE:
                     logger.info(f"[PageProvisioner.provision] Creating page: {sp_page.title}")
                     
-                    # Populate page with content before creating
-                    logger.debug(f"[PageProvisioner.provision] Calling _populate_page_content...")
-                    await self._populate_page_content(sp_page)
-                    logger.debug(f"[PageProvisioner.provision] Page population returned. Webparts now: {len(sp_page.webparts)}")
-                    
                     result = await self.repository.create_page(sp_page, site_id=site_id)
                     created_pages.append(result)
                     resource_links.append(result.get("resource_link", ""))
@@ -77,12 +72,7 @@ class PageProvisioner:
                 elif sp_page.action == ActionType.UPDATE:
                     if sp_page.page_id:
                         logger.info(f"[PageProvisioner.provision] Updating page: {sp_page.title}")
-                        
-                        # Populate page with content before updating
-                        logger.debug(f"[PageProvisioner.provision] Calling _populate_page_content for update...")
-                        await self._populate_page_content(sp_page)
-                        logger.debug(f"[PageProvisioner.provision] Page population returned. Webparts now: {len(sp_page.webparts)}")
-                        
+
                         result = await self.repository.update_page_content(sp_page.page_id, sp_page)
                         resource_links.append(result.get("resource_link", ""))
                         logger.info(f"[PageProvisioner.provision] Page updated: {sp_page.title}")
@@ -118,6 +108,9 @@ class PageProvisioner:
         Args:
             sp_page: SPPage entity to populate
         """
+        logger.info("[PageProvisioner] Page content population is temporarily disabled")
+        return
+
         try:
             logger.info(f"[PageProvisioner] Starting content population for page: '{sp_page.title}'")
             logger.debug(f"[PageProvisioner] Current webparts count: {len(sp_page.webparts)}")

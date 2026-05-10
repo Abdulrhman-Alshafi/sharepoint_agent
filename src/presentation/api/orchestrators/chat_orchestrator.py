@@ -304,17 +304,35 @@ class ChatOrchestrator:
             if pending and not pending.is_expired():
                 try:
                     result = await pending.callable()
+
+                    action_success_label = {
+                        "delete_resource": "deleted",
+                        "delete_site": "deleted",
+                        "empty_recycle_bin": "emptied",
+                    }.get(pending.action_type, "completed")
+
+                    action_failure_label = {
+                        "delete_resource": "delete",
+                        "delete_site": "delete",
+                        "empty_recycle_bin": "empty",
+                    }.get(pending.action_type, "complete")
+
                     if isinstance(result, bool):
-                        status_str = "completed successfully" if result else "failed. Please check permissions and try again"
-                        success_icon = "✅" if result else "❌"
+                        if result:
+                            return ChatResponse(
+                                intent="chat",
+                                reply=f"✅ Successfully {action_success_label} **{pending.resource_name}**.",
+                                session_id=session_id
+                            )
+
                         return ChatResponse(
                             intent="chat",
-                            reply=f"{success_icon} The action on **{pending.resource_name}** {status_str}.",
+                            reply=f"❌ Failed to {action_failure_label} **{pending.resource_name}**. Please check permissions and try again.",
                             session_id=session_id
                         )
                     return ChatResponse(
                         intent="chat",
-                        reply=f"✅ Done — **{pending.resource_name}** action completed successfully.",
+                        reply=f"✅ Successfully {action_success_label} **{pending.resource_name}**.",
                         session_id=session_id
                     )
                 except Exception as confirm_err:
@@ -527,7 +545,26 @@ class ChatOrchestrator:
             "add data" in _msg_for_item_guard
             and any(p in _msg_for_item_guard for p in ("this list", "the list", "to it", "to this"))
         )
-        if (_looks_like_sample_item_add or _looks_like_add_data_followup) and last_created_tuple and last_created_tuple[1] == "list":
+        _looks_like_inline_field_values = bool(
+            re.search(r"\b[\w\s]+:\s*[^,\n]+", resolved_message or "")
+        )
+        _assistant_last_msg = ""
+        for _h in reversed(history or []):
+            if _h.get("role") == "assistant":
+                _assistant_last_msg = (_h.get("content") or "").lower()
+                break
+        _assistant_prompted_for_item_values = any(
+            p in _assistant_last_msg
+            for p in (
+                "what data would you like to add",
+                "this list has these columns",
+                "you can tell me the values",
+                "or i can generate sample data",
+            )
+        )
+        _looks_like_item_value_reply = _looks_like_inline_field_values and _assistant_prompted_for_item_values
+
+        if (_looks_like_sample_item_add or _looks_like_add_data_followup or _looks_like_item_value_reply) and last_created_tuple and last_created_tuple[1] == "list":
             item_resp = await handle_item_operations(
                 resolved_message,
                 session_id,
@@ -654,6 +691,10 @@ class ChatOrchestrator:
                         collected = spec.collected_fields if spec else {}
                         from src.presentation.api.utils.prompt_builder import build_provisioning_prompt_from_spec
 
+                        # Auto-populate owner_email with authenticated user's email for sites
+                        if spec and spec.resource_type == ResourceType.SITE and user_email:
+                            spec.collected_fields["owner_email"] = user_email
+                        
                         provision_prompt = build_provisioning_prompt_from_spec(spec) if spec else "Create a resource"
                         logger.info("Gathering complete — provisioning with prompt: %s", provision_prompt)
 

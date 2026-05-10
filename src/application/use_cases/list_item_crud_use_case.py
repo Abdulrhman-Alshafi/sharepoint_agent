@@ -13,8 +13,9 @@ logger = get_logger(__name__)
 class ListItemCRUDUseCase:
     """Handle basic and validated CRUD operations on SharePoint list items."""
 
-    def __init__(self, repository: IListRepository):
+    def __init__(self, repository: IListRepository, permission_repository: Optional[Any] = None):
         self.repository = repository
+        self.permission_repository = permission_repository
 
     # ── Basic CRUD ───────────────────────────────────────────────────────────
 
@@ -28,7 +29,8 @@ class ListItemCRUDUseCase:
         """Create a new item in a SharePoint list."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to create list items.")
-        has_perms = await self.repository.check_user_permission(user_login, SPPermissionMask.ADD_LIST_ITEMS)
+        permission_repo = self.permission_repository or self.repository
+        has_perms = await permission_repo.check_user_permission(user_login, SPPermissionMask.ADD_LIST_ITEMS)
         if not has_perms:
             raise PermissionDeniedException(f"User '{user_login}' does not have permission to add items to this list.")
         try:
@@ -49,7 +51,8 @@ class ListItemCRUDUseCase:
         """Update an existing item in a SharePoint list."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to update list items.")
-        has_perms = await self.repository.check_user_permission(user_login, SPPermissionMask.EDIT_LIST_ITEMS)
+        permission_repo = self.permission_repository or self.repository
+        has_perms = await permission_repo.check_user_permission(user_login, SPPermissionMask.EDIT_LIST_ITEMS)
         if not has_perms:
             raise PermissionDeniedException(f"User '{user_login}' does not have permission to edit items in this list.")
         try:
@@ -69,7 +72,8 @@ class ListItemCRUDUseCase:
         """Delete an item from a SharePoint list. Returns True on success."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to delete list items.")
-        has_perms = await self.repository.check_user_permission(user_login, SPPermissionMask.DELETE_LIST_ITEMS)
+        permission_repo = self.permission_repository or self.repository
+        has_perms = await permission_repo.check_user_permission(user_login, SPPermissionMask.DELETE_LIST_ITEMS)
         if not has_perms:
             raise PermissionDeniedException(f"User '{user_login}' does not have permission to delete items from this list.")
         try:
@@ -89,7 +93,8 @@ class ListItemCRUDUseCase:
         """Query items from a SharePoint list with optional OData $filter."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to read list items.")
-        has_perms = await self.repository.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
+        permission_repo = self.permission_repository or self.repository
+        has_perms = await permission_repo.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
         if not has_perms:
             raise PermissionDeniedException(f"User '{user_login}' does not have permission to view items in this list.")
         try:
@@ -110,7 +115,8 @@ class ListItemCRUDUseCase:
         """Return the first item whose *field_name* matches *field_value*, or None."""
         if not user_login:
             raise PermissionDeniedException("No user identity provided. Authentication is required to read list items.")
-        has_perms = await self.repository.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
+        permission_repo = self.permission_repository or self.repository
+        has_perms = await permission_repo.check_user_permission(user_login, SPPermissionMask.VIEW_LIST_ITEMS)
         if not has_perms:
             raise PermissionDeniedException(f"User '{user_login}' does not have permission to view items in this list.")
         _ALLOWED_FIELD_NAMES = {
