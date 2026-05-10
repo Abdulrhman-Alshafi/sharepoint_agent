@@ -67,9 +67,6 @@ class SiteProvisioner:
         Returns:
             List of warnings from page population
         """
-        logger.info("[SiteProvisioner] Page content population is temporarily disabled")
-        return []
-
         logger.info(f"[SiteProvisioner] Starting page content population for {len(pages)} pages")
         logger.debug(f"[SiteProvisioner] Site ID: {site_id}")
         warnings = []

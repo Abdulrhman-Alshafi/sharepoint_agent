@@ -95,14 +95,6 @@ class QuestionTemplates:
             validation_hint="Page title should be clear and descriptive"
         ),
         Question(
-            field_name="sections",
-            question_text="What sections or web parts should this page include?\n\nList what you want (e.g., 'Hero banner, Quick links, News feed, People').",
-            field_type="text",
-            required=False,
-            options=["Hero banner, Quick links, News feed", "Hero banner, Text content, People"],
-            default_value=""
-        ),
-        Question(
             field_name="target_site",
             question_text="Where do you want to add this new content?\n\nQuick option: choose **Use current site** to add it to the site you're currently in.",
             field_type="text",

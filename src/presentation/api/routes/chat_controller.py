@@ -19,7 +19,13 @@ from src.presentation.api.schemas.chat_schemas import ChatRequest, ChatResponse
 from src.presentation.api.orchestrators.chat_orchestrator import ChatOrchestrator
 
 # Services
-from src.presentation.api.services.validation_service import extract_raw_token, extract_page_context, extract_site_id, extract_user_info
+from src.presentation.api.services.validation_service import (
+    extract_raw_token,
+    extract_page_context,
+    extract_site_id,
+    extract_upload_site_id,
+    extract_user_info,
+)
 from src.presentation.api.services import conversation_state
 from src.presentation.api.services.upload_service import validate_uploads, format_pending_upload_prompt, format_upload_response
 from src.presentation.api.services.library_matcher import match_library_from_message, extract_named_library
@@ -41,6 +47,7 @@ async def chat_upload(
     file: Optional[UploadFile] = File(None, description="Single file (legacy field name)"),
     message: Optional[str] = Form(None, description="Optional instruction, e.g. 'add to Documents'"),
     history: Optional[str] = Form(None, description="JSON array of conversation history"),
+    site_id: Optional[str] = Form(None, description="Optional active site ID from current chat/page context"),
     session_id: Optional[str] = Form(None),
     current_user: Dict = Depends(get_current_user),
     _active: bool = Depends(require_active_user),
@@ -78,12 +85,19 @@ async def chat_upload(
             reply="\n".join(errors) if errors else "❌ No valid files were received.",
         )
 
-    # 4. Fetch libraries
-    library_repo = get_library_repository(user_token=raw_token)
+    # 4. Resolve active site for scoped library suggestions
+    effective_site_id = extract_upload_site_id(site_id, history)
+    if (not site_id or not site_id.strip()) and effective_site_id == settings.SITE_ID and session_id:
+        last_created = await conversation_state.get_last_created(sid)
+        if last_created and len(last_created) > 2 and last_created[2]:
+            effective_site_id = last_created[2]
+
+    # 5. Fetch libraries from active site
+    library_repo = get_library_repository(user_token=raw_token, site_id=effective_site_id)
     try:
-        libraries = await library_repo.get_all_document_libraries()
+        libraries = await library_repo.get_all_document_libraries(site_id=effective_site_id)
     except Exception as lib_err:
-        logger.error("chat_upload: failed to list libraries: %s", lib_err)
+        logger.error("chat_upload: failed to list libraries for site %s: %s", effective_site_id, lib_err)
         libraries = []
 
     if not libraries:
@@ -92,7 +106,7 @@ async def chat_upload(
             reply="❌ No document libraries found. Make sure you have access to at least one SharePoint document library.",
         )
 
-    # 5. Resolve library
+    # 6. Resolve library
     from src.presentation.api.services.library_matcher import find_best_library
     target_library = None
     named_library = None
@@ -105,13 +119,13 @@ async def chat_upload(
     if target_library is None and len(libraries) == 1:
         target_library = libraries[0]
 
-    # 6. Upload immediately if library is known
+    # 7. Upload immediately if library is known
     if target_library is not None:
         lib_id = target_library.get("id") or target_library.get("driveId", "")
         lib_name = target_library.get("displayName") or target_library.get("name", "Library")
         
         from src.presentation.api.services.upload_service import execute_uploads
-        drive_repo = get_drive_repository(user_token=raw_token)
+        drive_repo = get_drive_repository(user_token=raw_token, site_id=effective_site_id)
         success_lines, fail_lines, last_url = await execute_uploads(validated_files, lib_id, lib_name, drive_repo)
         
         if success_lines:
@@ -124,9 +138,9 @@ async def chat_upload(
                 suggested_actions=["Upload another file", f"List files in {lib_name}"],
             )
 
-    # 7. Library unclear — store pending and ask
+    # 8. Library unclear — store pending and ask
     pending_id = await conversation_state.store_pending_files(validated_files)
-    intro, lib_names = format_pending_upload_prompt(validated_files, libraries, named_library, message)
+    intro, _ = format_pending_upload_prompt(validated_files, libraries, named_library, message)
     
     return ChatResponse(
         intent="file_operation",
@@ -134,9 +148,7 @@ async def chat_upload(
         reply=intro,
         requires_input=True,
         question_prompt="Which library would you like to upload this file to?",
-        field_type="choice",
-        field_options=lib_names,
-        quick_suggestions=[f"Upload to {n}" for n in lib_names],
+        field_type="text",
         pending_file_id=pending_id,
     )
 
@@ -170,7 +182,6 @@ async def chat(
         page_ctx = extract_page_context(body)
         raw_token = extract_raw_token(request)
         user_email, user_login_name = extract_user_info(current_user)
-        
         # Extract pending file logic (if file was pending and user replies with library choice)
         if body.pending_file_id:
             pending_files = await conversation_state.get_pending_files(body.pending_file_id)
@@ -179,23 +190,21 @@ async def chat(
                     intent="file_operation", session_id=session_id,
                     reply="⏰ The file(s) you uploaded earlier have expired. Please attach the file(s) again.",
                 )
-                
+
             library_repo = get_library_repository(user_token=raw_token, site_id=site_id)
             try:
                 libraries = await library_repo.get_all_document_libraries(site_id=site_id)
             except Exception:
                 libraries = []
-                
+
             target = match_library_from_message(body.message, libraries)
             if target is None and libraries:
-                lib_names = [lib.get("displayName") or lib.get("name", "?") for lib in libraries[:8]]
                 return ChatResponse(
                     intent="file_operation", session_id=session_id,
-                    reply=f"I couldn't find that library. Please choose one of: {', '.join(lib_names)}",
+                    reply="I couldn't find that library. Please type the exact library name.",
                     requires_input=True,
-                    field_type="choice",
-                    field_options=lib_names,
-                    quick_suggestions=[f"Upload to {n}" for n in lib_names],
+                    question_prompt="Which library would you like to upload this file to?",
+                    field_type="text",
                     pending_file_id=body.pending_file_id,
                 )
                 
