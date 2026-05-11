@@ -11,13 +11,29 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache: (timestamp, data)
-_user_cache: Dict[str, Any] = {"ts": 0.0, "users": []}
+# Module-level cache: {cache_key: (timestamp, data)}
+_user_cache: Dict[str, Any] = {}
 _CACHE_TTL = 600  # 10 minutes
 
 
 class TenantUsersService:
     """Fetch and cache tenant users from Microsoft Graph."""
+
+    @staticmethod
+    def _get_cache_key(repository: Any) -> str:
+        """Generate a cache key based on the repository's identity (App vs User)."""
+        graph_client = getattr(repository, "graph_client", None)
+        if not graph_client:
+            return "DEFAULT"
+        
+        # If it's a user-scoped (OBO) client, use the token hash (or identity) as the key.
+        # This prevents User A from seeing User B's cached directory results.
+        user_token = getattr(graph_client, "user_token", None)
+        if user_token:
+            import hashlib
+            return f"USER_{hashlib.sha256(user_token.encode()).hexdigest()[:16]}"
+        
+        return "APP_ONLY"
 
     @staticmethod
     async def get_tenant_users(
@@ -32,11 +48,14 @@ class TenantUsersService:
         2. Fall back to ``get_site_members(site_id)`` which only needs Sites scopes.
         3. If everything fails, return an empty list (non-fatal).
 
-        Results are cached for ``_CACHE_TTL`` seconds.
+        Results are cached for ``_CACHE_TTL`` seconds per-identity.
         """
+        cache_key = TenantUsersService._get_cache_key(repository)
         now = time.time()
-        if _user_cache["users"] and (now - _user_cache["ts"]) < _CACHE_TTL:
-            return _user_cache["users"]
+        
+        cached_entry = _user_cache.get(cache_key)
+        if cached_entry and (now - cached_entry["ts"]) < _CACHE_TTL:
+            return cached_entry["users"]
 
         users: List[Dict[str, str]] = []
 
@@ -53,8 +72,8 @@ class TenantUsersService:
                     if display and email:
                         users.append({"displayName": display, "email": email})
                 if users:
-                    logger.info("TenantUsersService: fetched %d users from /users", len(users))
-                    _user_cache.update({"ts": now, "users": users})
+                    logger.info("TenantUsersService: fetched %d users from /users (key: %s)", len(users), cache_key)
+                    _user_cache[cache_key] = {"ts": now, "users": users}
                     return users
         except Exception as e:
             logger.debug("TenantUsersService: /users failed (%s), falling back to site members", e)
@@ -69,11 +88,11 @@ class TenantUsersService:
                     if display and email:
                         users.append({"displayName": display, "email": email})
                 if users:
-                    logger.info("TenantUsersService: fetched %d users from site members", len(users))
-                    _user_cache.update({"ts": now, "users": users})
+                    logger.info("TenantUsersService: fetched %d users from site members (key: %s)", len(users), cache_key)
+                    _user_cache[cache_key] = {"ts": now, "users": users}
                     return users
         except Exception as e:
-            logger.debug("TenantUsersService: site members fallback failed: %s", e)
+            logger.debug("TenantUsersService: site members fallback failed (key: %s): %s", cache_key, e)
 
         # ── Strategy 3: Empty (non-fatal) ────────────────────────────────
         logger.warning("TenantUsersService: could not fetch any real users — seed data will use AI-generated names")
@@ -95,7 +114,7 @@ class TenantUsersService:
     @staticmethod
     def clear_cache():
         """Clear the user cache (useful for testing)."""
-        _user_cache.update({"ts": 0.0, "users": []})
+        _user_cache.clear()
 
     @staticmethod
     async def find_user_by_name(

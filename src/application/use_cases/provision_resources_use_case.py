@@ -155,6 +155,7 @@ class ProvisionResourcesUseCase:
             command.prompt,
             target_site_id=command.target_site_id or None,
             fallback_user_email=command.user_email or command.user_login_name or None,
+            site_repository=exec_site_repo,
         )
 
         # If the user explicitly requested default/open access for libraries,
@@ -163,7 +164,11 @@ class ProvisionResourcesUseCase:
         
         # 2. Auto-correct collisions with existing resources (unless explicitly skipped)
         if not skip_collision_check:
-            await self._correct_blueprint_collisions(blueprint, target_site_id=command.target_site_id or None)
+            await self._correct_blueprint_collisions(
+                blueprint, 
+                target_site_id=command.target_site_id or None,
+                list_repository=exec_list_repo
+            )
             
         # Ensure user identity is set as the site owner if not explicitly provided
         for sp_site in blueprint.get_all_sites():
@@ -373,6 +378,7 @@ class ProvisionResourcesUseCase:
         prompt: str,
         target_site_id: str = None,
         fallback_user_email: str = None,
+        site_repository: Any = None,
     ) -> ProvisioningBlueprint:
         """Generate provisioning blueprint from user prompt.
         
@@ -396,7 +402,7 @@ class ProvisionResourcesUseCase:
         try:
             from src.infrastructure.services.tenant_users_service import TenantUsersService
             tenant_users = await TenantUsersService.get_tenant_users(
-                self.site_repository,
+                site_repository or self.site_repository,
                 site_id=target_site_id,
             )
         except Exception as e:
@@ -434,17 +440,19 @@ class ProvisionResourcesUseCase:
         if removed > 0:
             logger.info("Suppressed %d library permission group assignment(s) (library permissions disabled)", removed)
 
-    async def _correct_blueprint_collisions(self, blueprint: ProvisioningBlueprint, target_site_id: str = None) -> None:
+    async def _correct_blueprint_collisions(self, blueprint: ProvisioningBlueprint, target_site_id: str = None, list_repository: Any = None) -> None:
         """Auto-correct blueprint to UPDATE existing resources instead of CREATE.
         
         Args:
             blueprint: Blueprint to check and correct
             target_site_id: Site to check collisions against (defaults to main site)
+            list_repository: Optional user-aware repository for OBO-safe discovery
         """
         try:
-            if not self.list_repository:
+            eff_list_repo = list_repository or self.list_repository
+            if not eff_list_repo:
                 return
-            existing_lists = await self.list_repository.get_all_lists(site_id=target_site_id or None)
+            existing_lists = await eff_list_repo.get_all_lists(site_id=target_site_id or None)
             existing_titles = {
                 lst.get("displayName", "").lower(): str(lst.get("id", ""))
                 for lst in existing_lists

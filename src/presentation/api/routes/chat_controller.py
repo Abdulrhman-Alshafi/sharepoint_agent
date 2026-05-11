@@ -24,6 +24,7 @@ from src.presentation.api.services.validation_service import (
     extract_page_context,
     extract_site_id,
     extract_upload_site_id,
+    should_resolve_pending_upload,
     extract_user_info,
 )
 from src.presentation.api.services import conversation_state
@@ -190,6 +191,25 @@ async def chat(
                     intent="file_operation", session_id=session_id,
                     reply="⏰ The file(s) you uploaded earlier have expired. Please attach the file(s) again.",
                 )
+
+            # Keep pending upload in background unless user explicitly routes it.
+            if not should_resolve_pending_upload(body.message):
+                normal_resp = await ChatOrchestrator.process_chat(
+                    message=body.message,
+                    history=body.history or [],
+                    session_id=session_id,
+                    site_id=site_id,
+                    site_ids=body.site_ids or [],
+                    page_ctx=page_ctx,
+                    raw_token=raw_token,
+                    user_email=user_email,
+                    user_login_name=user_login_name,
+                    intent_classifier=intent_classifier,
+                    provisioning_service=provisioning_service,
+                    data_query_service=data_query_service,
+                )
+                normal_resp.pending_file_id = body.pending_file_id
+                return normal_resp
 
             library_repo = get_library_repository(user_token=raw_token, site_id=site_id)
             try:

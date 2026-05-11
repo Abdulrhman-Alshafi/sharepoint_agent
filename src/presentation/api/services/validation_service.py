@@ -5,6 +5,7 @@ Extracts shared validation patterns used across controllers and orchestrators.
 
 import logging
 import json
+import re
 from typing import Any, Dict, Optional
 
 from src.infrastructure.config import settings
@@ -108,6 +109,39 @@ def _normalize_site_id(value: Any) -> Optional[str]:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def should_resolve_pending_upload(message: str) -> bool:
+    """Return True when a message is likely selecting a target library.
+
+    This prevents pending uploads from hijacking unrelated chat turns.
+    """
+    text = (message or "").strip()
+    if not text:
+        return False
+
+    low = text.lower()
+
+    # Questions/listing requests should continue normal chat.
+    query_starts = (
+        "show", "list", "what", "which", "how", "why", "when", "who",
+        "where", "can", "could", "do", "does", "is", "are",
+    )
+    if low.startswith(query_starts):
+        return False
+
+    # Explicit upload-routing intent.
+    if re.search(r"\b(add|upload|put|move|save|store)\b", low) and re.search(r"\b(to|into|in)\b", low):
+        return True
+    if "library" in low and re.search(r"\b(to|into|in)\b", low):
+        return True
+
+    # Short plain text (e.g. "Announcements") is likely a direct library name.
+    words = re.findall(r"[A-Za-z0-9_-]+", text)
+    if 1 <= len(words) <= 4 and not text.endswith("?"):
+        return True
+
+    return False
 
 
 def extract_user_info(current_user: Any) -> tuple:
